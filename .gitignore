@@ -1,0 +1,8 @@
+# macOS
+.DS_Store
+
+# Original migration bundle (contents already unpacked into the repo)
+files.zip
+
+# Scratch
+_unzipped/
