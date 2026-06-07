@@ -7,18 +7,36 @@ Single-file app: **`index.html`** contains all HTML, CSS, and JS — no build sy
 ## How to run
 Open `index.html` in any browser. That's it.
 
-## How to deploy
-```bash
-# Uses Netlify MCP CLI — run from the repo root
-npx -y @netlify/mcp@latest --site-id 847127c4-be09-4427-a522-072e58ae0c1f \
-  --proxy-path "$(netlify-mcp-proxy-path)"
-```
-Site: https://maze-designer-v2.netlify.app  
-Netlify team ID: 68c826910e60b405e08b5303  
-Site ID: `847127c4-be09-4427-a522-072e58ae0c1f`
+## How to deploy — git-based CD (just push)
+Deploy is **continuous via git** (Netlify deploy-key + push webhook). **Just `git push`** the branch:
+- push `main`  → production: https://maze-designer-v2.netlify.app
+- push `dev`   → preview: https://dev--maze-designer-v2.netlify.app
+- push `curvy` → preview: https://curvy--maze-designer-v2.netlify.app
 
-In practice, get a fresh `--proxy-path` token by running the Netlify deploy-site tool
-and copying the `npx` command it returns, then run it from this directory.
+`allowed_branches: [main, dev, curvy]`. Site ID `847127c4-be09-4427-a522-072e58ae0c1f`, team `68c826910e60b405e08b5303`. Netlify CLI is authed (`netlify api listSiteDeploys --data '{"site_id":"847127c4-be09-4427-a522-072e58ae0c1f"}'` to check deploy state). **Workflow: build/test on a branch → check its preview → merge up (`curvy → dev → main`). Pushing `main` ships to prod — test on the branch preview first.** (The old `npx @netlify/mcp` method is dead.)
+
+## Branches
+- `main` — production (live). `dev` — integration, synced to main. **`curvy`** — ACTIVE feature branch: curvy render mode (below) + standalone `curvy-poc.html`.
+
+## Current state — 2026-06-07 (read this; sections below predate it)
+Since migration the app gained a lot. Deltas vs the old doc:
+- **Resolution from one "mazerunner size" stepper** (ball/bit/nozzle ⌀) + a **Clearance tweak** slider — old `TP` tool-preset dropdowns are gone (TP is dead code). `setRunner()`/`applyGeometry()` derive `cellSize`+`wallFrac`.
+- **Boundary step** also holds goal type (Exit/Inner) + the Resolution controls. Boundary source = Choose-template vs Draw-myself (polygon only; freehand removed). **Shift while drawing polygon → snap 45°** (`snap45`). Board-resize re-fits the active preset (`buildPreset`/`S.bndPreset`).
+- **Doors:** custom path is **grid-painting** (`startPathPaint`/`paintMove`/`endPaint`, BFS-connected + `simplifyPath`; gated by `pathConnected()`). **Branch anchors** (`S.doors.anchors`, type `dead`|`loop`) carve decoy/loop branches in `genOrtho`.
+- **Generate:** auto mode = Braid + Solution-character; custom-path mode = **Maze complexity** (`S.complexity`, partial fill; open chambers tagged `_open`). **Seeded** (`mulberry32`/`setSeed`/`S.seed`). **Style: Square/Curvy + Smoothing** (curvy = ortho only).
+- **Dead-ends list:** inline per-branch color box + editable name (`S.deadBranches[i].color/.name`) → named/colored SVG layers.
+- **Export:** per-layer include checkboxes drive `S.layers.*`, honored by `buildSVG`. **Persistence:** `saveSettings`/`loadSettings` (localStorage `mz-settings`).
+
+### Curvy render mode (curvy branch) — pure render+export, maze data unchanged
+- State: `S.renderMode` ('square'|'curvy'), `S.smoothing` (0..1), `S._chains` (cached).
+- `buildChains()` → corridor chains from the passage graph (skips chamber-internal `_open` edges); cached in `doGenerate`.
+- `smoothCanvasPath()`/`smoothSvgD()` = quad-bezier corner rounding (cut ≤ ½ cell → squeeze-free).
+- `drawCurvyMaze()` = wall plate clipped to boundary + carved smoothed channels + door stubs + open-chamber fills. `drawCurvyFillets()` rounds inside corners at T/+ junctions (radius scales with smoothing). `cellsSvgD()` smooths overlays.
+- SVG curvy: `<g id="channels">` smoothed paths + open-area `<rect>`s + fillet `<path>` arcs. Square SVG unchanged.
+
+## Dev/verify loop
+- Static preview: `python3 -m http.server 4321` from repo root (`.claude/launch.json` exists) → http://localhost:4321/index.html. The Claude-Preview MCP is flaky (re-navigate + rebuild state via eval if it reloads).
+- After edits: `node --check` the extracted `<script>`; validate SVG via `DOMParser`.
 
 ## 4-step UX flow
 ```
