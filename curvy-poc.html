@@ -14,8 +14,8 @@ h1{font-size:18px;font-weight:650;letter-spacing:-.01em;}
 .sub{font-size:12px;color:var(--ink3);margin-bottom:16px;}
 .ctl{display:flex;flex-wrap:wrap;align-items:center;gap:14px;background:var(--panel);border:.5px solid var(--bord);border-radius:12px;padding:11px 14px;margin-bottom:16px;font-size:12px;}
 .ctl label{display:flex;align-items:center;gap:7px;color:var(--ink2);white-space:nowrap;}
-.ctl input[type=range]{width:120px;}
-.val{font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600;min-width:34px;}
+.ctl input[type=range]{width:104px;}
+.val{font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600;min-width:30px;}
 button{font:inherit;font-size:12px;padding:5px 12px;border:.5px solid var(--bord);border-radius:8px;background:var(--panel);color:var(--ink);cursor:pointer;}
 button.pri{background:var(--ink);color:var(--bg);border-color:transparent;}
 button:hover{opacity:.85;}
@@ -34,33 +34,34 @@ canvas{width:100%;height:auto;display:block;border-radius:8px;background:var(--c
 </head>
 <body>
 <div class="wrap">
-  <h1>Curvy maze — proof of concept <span class="chip">Level 1 · round-stroke channels</span></h1>
-  <p class="sub">Same grid maze rendered two ways. Curvy = stroke the passage centerlines with round caps + round joins. Watch the clearance as you change the wall fraction.</p>
+  <h1>Curvy maze — proof of concept <span class="chip" id="lvl">Level 2 · grid + organic smoothing</span></h1>
+  <p class="sub">Same grid maze, rendered as round-stroked channels. The <b>Smoothing</b> slider morphs the curvy side from round-corner (grid) to flowing organic curves — drag it up and watch the walls for any pinch.</p>
 
   <div class="ctl">
     <label>Wall fraction <input type="range" id="wf" min="0.12" max="0.6" step="0.02" value="0.34"><span class="val" id="wfv">0.34</span></label>
     <label>Cells <input type="range" id="cells" min="8" max="22" step="1" value="14"><span class="val" id="cellsv">14</span></label>
-    <label style="cursor:pointer"><input type="checkbox" id="run" checked> Show mazerunner</label>
+    <label>Smoothing <input type="range" id="sm" min="0" max="1" step="0.05" value="0.6"><span class="val" id="smv">0.60</span></label>
+    <label style="cursor:pointer"><input type="checkbox" id="run" checked> Runner</label>
     <label style="cursor:pointer"><input type="checkbox" id="ctr"> Centerlines</label>
     <button class="pri" id="regen">Regenerate</button>
   </div>
 
   <div class="boards">
     <div class="board"><h2>Square (today)</h2><canvas id="cv1"></canvas></div>
-    <div class="board"><h2>Curvy (rounded channels)</h2><canvas id="cv2"></canvas></div>
+    <div class="board"><h2 id="h2">Curvy + smoothing</h2><canvas id="cv2"></canvas></div>
   </div>
 
   <div class="legend">
     <span><i class="sw" style="background:var(--entry)"></i> entry</span>
     <span><i class="sw" style="background:var(--exit)"></i> exit</span>
     <span><i class="sw" style="background:var(--sol)"></i> solution</span>
-    <span><i class="sw" style="background:var(--dead)"></i> a dead-end (rounded hall end)</span>
-    <span><i class="sw" style="background:var(--acc);opacity:.5"></i> mazerunner ⌀ = passage width</span>
+    <span><i class="sw" style="background:var(--dead)"></i> dead-end</span>
+    <span><i class="sw" style="background:var(--acc);opacity:.5"></i> mazerunner ⌀ = passage</span>
   </div>
 
   <p class="note">
-    <b>The point:</b> the curvy render is a constant-width stroke along the passage graph, so it <b>can never pinch below the passage width</b> — the rounding only adds room on the outside of turns. The mazerunner circle (passage diameter) fits the straights and gets <i>extra</i> clearance at every rounded corner. Drop the wall fraction toward its minimum and you'll see the <b>walls</b> get thin (a structural limit we already clamp via the mazerunner constraint), but the <b>passages never squeeze</b>.<br>
-    <b>Next (Level 2):</b> smooth the centerlines into splines for an organic look — same idea, but we'd clamp curvature &gt; ½·passage and deviation &lt; ½·wall so it stays squeeze-free.
+    <b>Level 1 (Smoothing 0):</b> round-corner channels on the grid — squeeze-free by construction.<br>
+    <b>Level 2 (Smoothing &gt; 0):</b> the passage centerlines are smoothed into curves (rounded-corner splines through the cell centers), giving the organic / U-turn feel while staying on the same 2-axis grid. Corners stay connected at junctions (only mid-corridor bends smooth), and the cut distance is capped at ½·cell so a curve's inner radius stays &gt; ½·passage and it never bows past a neighbor — i.e. <b>still no squeeze points</b> within the slider's range. Crank it + thin walls + few cells to probe the limit.
   </p>
 </div>
 
@@ -68,8 +69,9 @@ canvas{width:100%;height:auto;display:block;border-radius:8px;background:var(--c
 var DPR=Math.min(window.devicePixelRatio||1,2);
 var maze=null, COLS=14, ROWS=11;
 function cssVar(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();}
+var DV={N:[0,-1],S:[0,1],W:[-1,0],E:[1,0]};
 
-// --- generate a perfect maze (recursive backtracker), plus one entry/exit + a marked solution ---
+// ---- generate a perfect maze + solution + a sample dead-end + passage chains ----
 function gen(cols,rows){
   var g=[];
   for(var r=0;r<rows;r++){var row=[];for(var c=0;c<cols;c++)row.push({c:c,r:r,N:true,S:true,E:true,W:true,v:false});g.push(row);}
@@ -82,112 +84,135 @@ function gen(cols,rows){
     var d=opts[Math.floor(Math.random()*opts.length)],n=g[cur.r+d.dr][cur.c+d.dc];
     cur[d.a]=false;n[d.b]=false;n.v=true;stack.push(n);
   }
-  // entry top-left (open N), exit bottom-right (open S)
-  g[0][0].N=false; g[rows-1][cols-1].S=false;
-  // solution via BFS
-  var prev={},q=[g[0][0]],seen={};seen['0,0']=true;
-  var DV={N:[0,-1],S:[0,1],W:[-1,0],E:[1,0]};
-  while(q.length){var cu=q.shift();for(var k in DV){if(cu[k])continue;var nc=cu.c+DV[k][0],nr=cu.r+DV[k][1];if(nc<0||nc>=cols||nr<0||nr>=rows)continue;var id=nc+','+nr;if(seen[id])continue;seen[id]=true;prev[id]=cu;q.push(g[nr][nc]);}}
+  g[0][0].N=false; g[rows-1][cols-1].S=false;                 // entry / exit gaps
+  // solution (BFS)
+  var prev={},q=[g[0][0]],seen={'0,0':1};
+  while(q.length){var cu=q.shift();for(var k in DV){if(cu[k])continue;var nc=cu.c+DV[k][0],nr=cu.r+DV[k][1];if(nc<0||nc>=cols||nr<0||nr>=rows)continue;var id=nc+','+nr;if(seen[id])continue;seen[id]=1;prev[id]=cu;q.push(g[nr][nc]);}}
   var sol=[],t=g[rows-1][cols-1];while(t){sol.unshift(t);t=prev[t.c+','+t.r];}
-  // pick a representative dead-end branch (a degree-1 cell not on the solution) to color
-  var solSet={};sol.forEach(function(x){solSet[x.c+','+x.r]=true;});
+  var solSet={};sol.forEach(function(x){solSet[x.c+','+x.r]=1;});
   var deadTip=null;
-  for(var r=0;r<rows;r++)for(var c=0;c<cols;c++){var cell=g[r][c];var open=0;['N','S','E','W'].forEach(function(k){if(!cell[k])open++;});if(open===1&&!solSet[c+','+r]){deadTip=cell;}}
-  var dead=[];
-  if(deadTip){var tt=deadTip;while(tt&&!solSet[tt.c+','+tt.r]){dead.unshift(tt);tt=prev[tt.c+','+tt.r];}if(tt)dead.unshift(tt);}
-  return {g:g,cols:cols,rows:rows,sol:sol,dead:dead};
+  for(var r2=0;r2<rows;r2++)for(var c2=0;c2<cols;c2++){var cell=g[r2][c2];if(deg(cell,g,cols,rows)===1&&!solSet[c2+','+r2])deadTip=cell;}
+  var dead=[];if(deadTip){var tt=deadTip;while(tt&&!solSet[tt.c+','+tt.r]){dead.unshift(tt);tt=prev[tt.c+','+tt.r];}if(tt)dead.unshift(tt);}
+  var m={g:g,cols:cols,rows:rows,sol:sol,dead:dead};
+  m.chains=chains(m);
+  return m;
+}
+function deg(cell){var d=0;['N','S','E','W'].forEach(function(k){if(!cell[k])d++;});return d;}
+function nb(m,cell,k){var nc=cell.c+DV[k][0],nr=cell.r+DV[k][1];if(nc<0||nc>=m.cols||nr<0||nr>=m.rows)return null;return m.g[nr][nc];}
+// decompose the passage tree into chains (sequences of cells between endpoints/junctions)
+function chains(m){
+  var used={},out=[];
+  function ek(a,b){return [a.c+','+a.r,b.c+','+b.r].sort().join('|');}
+  for(var r=0;r<m.rows;r++)for(var c=0;c<m.cols;c++){
+    var cell=m.g[r][c];
+    if(deg(cell)===2)continue;                               // only start at endpoints/junctions
+    ['N','S','E','W'].forEach(function(k){
+      if(cell[k])return; var nx=nb(m,cell,k); if(!nx||used[ek(cell,nx)])return;
+      var chain=[cell],prev=cell,cu=nx;
+      while(true){
+        used[ek(prev,cu)]=1; chain.push(cu);
+        if(deg(cu)!==2)break;
+        var nextc=null;
+        ['N','S','E','W'].forEach(function(kk){if(cu[kk])return;var nn=nb(m,cu,kk);if(!nn||nn===prev)return;nextc=nn;});
+        if(!nextc)break; prev=cu; cu=nextc;
+      }
+      out.push(chain);
+    });
+  }
+  return out;
 }
 
 function geom(canvas,m){
-  var pad=14, avail=canvas.clientWidth-pad*2;
-  var cs=Math.floor(avail/m.cols);
-  var W=cs*m.cols, H=cs*m.rows, ox=(canvas.clientWidth-W)/2, oy=pad;
-  var cssH=H+pad*2;
+  var pad=14, avail=canvas.clientWidth-pad*2, cs=Math.floor(avail/m.cols);
+  var W=cs*m.cols,H=cs*m.rows,ox=(canvas.clientWidth-W)/2,oy=pad,cssH=H+pad*2;
   canvas.style.height=cssH+'px';
-  canvas.width=Math.round(canvas.clientWidth*DPR); canvas.height=Math.round(cssH*DPR);
-  var ctx=canvas.getContext('2d'); ctx.setTransform(DPR,0,0,DPR,0,0);
+  canvas.width=Math.round(canvas.clientWidth*DPR);canvas.height=Math.round(cssH*DPR);
+  var ctx=canvas.getContext('2d');ctx.setTransform(DPR,0,0,DPR,0,0);
   return {ctx:ctx,cs:cs,ox:ox,oy:oy,W:W,H:H};
 }
-function ctr(gm,cell){return {x:gm.ox+(cell.c+0.5)*gm.cs, y:gm.oy+(cell.r+0.5)*gm.cs};}
+function ctr(gm,cell){return {x:gm.ox+(cell.c+0.5)*gm.cs,y:gm.oy+(cell.r+0.5)*gm.cs};}
 
-// --- SQUARE render (today's style: wall strokes on grid edges) ---
+// build a (optionally smoothed) path through points into the current ctx path
+function buildSmooth(ctx,pts,s){
+  if(pts.length<3||s<=0){ctx.moveTo(pts[0].x,pts[0].y);for(var i=1;i<pts.length;i++)ctx.lineTo(pts[i].x,pts[i].y);return;}
+  ctx.moveTo(pts[0].x,pts[0].y);
+  for(var i=1;i<pts.length-1;i++){
+    var p0=pts[i-1],p1=pts[i],p2=pts[i+1];
+    var d1=Math.hypot(p1.x-p0.x,p1.y-p0.y)||1,d2=Math.hypot(p2.x-p1.x,p2.y-p1.y)||1;
+    var r=Math.min(d1,d2)*0.5*s;                              // cut distance, capped at ½ segment
+    var a={x:p1.x+(p0.x-p1.x)/d1*r,y:p1.y+(p0.y-p1.y)/d1*r};
+    var b={x:p1.x+(p2.x-p1.x)/d2*r,y:p1.y+(p2.y-p1.y)/d2*r};
+    ctx.lineTo(a.x,a.y);ctx.quadraticCurveTo(p1.x,p1.y,b.x,b.y);
+  }
+  ctx.lineTo(pts[pts.length-1].x,pts[pts.length-1].y);
+}
+
+// overlay stroke for solution / dead-end (sharp in square mode, smoothed in curvy)
+function overlay(ctx,gm,cells,color,w,alpha,o){
+  if(!cells||cells.length<2)return;
+  var pts=cells.map(function(cl){return ctr(gm,cl);});
+  if(o.extendTip&&pts.length>=2){var n=pts.length,a=pts[n-2],b=pts[n-1],d=Math.hypot(b.x-a.x,b.y-a.y)||1;pts[n-1]={x:b.x+(b.x-a.x)/d*gm.cs*0.42,y:b.y+(b.y-a.y)/d*gm.cs*0.42};}
+  ctx.beginPath();
+  if(o.sharp){ctx.moveTo(pts[0].x,pts[0].y);for(var i=1;i<pts.length;i++)ctx.lineTo(pts[i].x,pts[i].y);}
+  else buildSmooth(ctx,pts,o.sm||0);
+  ctx.strokeStyle=color;ctx.lineWidth=Math.max(1.5,w);ctx.globalAlpha=alpha;
+  if(o.sharp){ctx.lineCap='butt';ctx.lineJoin='miter';ctx.miterLimit=10;}else{ctx.lineCap='round';ctx.lineJoin='round';}
+  ctx.stroke();ctx.globalAlpha=1;
+}
+
+// ---- SQUARE (today's style: wall strokes, square caps so corners are clean points) ----
 function drawSquare(canvas,m,wf){
   var gm=geom(canvas,m),ctx=gm.ctx,cs=gm.cs;
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle=cssVar('--chan');ctx.fillRect(gm.ox,gm.oy,gm.W,gm.H);
-  drawPath(ctx,gm,m.dead,cssVar('--dead'),cs*(1-wf)*0.55,0.7,true);
-  drawPath(ctx,gm,m.sol,cssVar('--sol'),cs*(1-wf)*0.55,0.85,true);
+  overlay(ctx,gm,m.dead,cssVar('--dead'),cs*(1-wf)*0.55,0.8,{sharp:true,extendTip:true});
+  overlay(ctx,gm,m.sol,cssVar('--sol'),cs*(1-wf)*0.55,0.9,{sharp:true});
   ctx.strokeStyle=cssVar('--wall');ctx.lineWidth=Math.max(1,cs*wf*0.8);ctx.lineCap='square';ctx.lineJoin='miter';
-  for(var r=0;r<m.rows;r++)for(var c=0;c<m.cols;c++){
-    var cell=m.g[r][c],x=gm.ox+c*cs,y=gm.oy+r*cs;
-    if(cell.N){line(ctx,x,y,x+cs,y);} if(cell.S){line(ctx,x,y+cs,x+cs,y+cs);}
-    if(cell.W){line(ctx,x,y,x,y+cs);} if(cell.E){line(ctx,x+cs,y,x+cs,y+cs);}
-  }
-  endcaps(ctx,gm,m,wf,false);
+  for(var r=0;r<m.rows;r++)for(var c=0;c<m.cols;c++){var cell=m.g[r][c],x=gm.ox+c*cs,y=gm.oy+r*cs;
+    if(cell.N)line(ctx,x,y,x+cs,y); if(cell.S)line(ctx,x,y+cs,x+cs,y+cs);
+    if(cell.W)line(ctx,x,y,x,y+cs); if(cell.E)line(ctx,x+cs,y,x+cs,y+cs);}
+  endcaps(ctx,gm,m);
 }
 
-// --- CURVY render (stroke passage centerlines, round join + round cap) ---
-function drawCurvy(canvas,m,wf,showRunner,showCtr){
+// ---- CURVY: stroke the passage chains (smoothed by `sm`), round caps/joins ----
+function drawCurvy(canvas,m,wf,showRunner,showCtr,sm){
   var gm=geom(canvas,m),ctx=gm.ctx,cs=gm.cs,pw=cs*(1-wf);
   ctx.clearRect(0,0,canvas.width,canvas.height);
-  // wall plate
   ctx.fillStyle=cssVar('--wall');ctx.fillRect(gm.ox,gm.oy,gm.W,gm.H);
-  // carve channels: stroke each open edge once (E + S), round cap/join => corners & hall-ends round automatically
   ctx.strokeStyle=cssVar('--chan');ctx.lineWidth=pw;ctx.lineCap='round';ctx.lineJoin='round';
-  for(var r=0;r<m.rows;r++)for(var c=0;c<m.cols;c++){
-    var cell=m.g[r][c],a=ctr(gm,cell);
-    if(!cell.E&&c+1<m.cols){var b=ctr(gm,m.g[r][c+1]);seg(ctx,a,b);}
-    if(!cell.S&&r+1<m.rows){var d=ctr(gm,m.g[r+1][c]);seg(ctx,a,d);}
-  }
-  // door stubs to the boundary (entry top-left, exit bottom-right)
+  for(var i=0;i<m.chains.length;i++){var pts=m.chains[i].map(function(cl){return ctr(gm,cl);});ctx.beginPath();buildSmooth(ctx,pts,sm);ctx.stroke();}
   var s0=ctr(gm,m.g[0][0]),e0=ctr(gm,m.g[m.rows-1][m.cols-1]);
-  seg(ctx,s0,{x:s0.x,y:gm.oy-pw*0.0}); seg(ctx,e0,{x:e0.x,y:gm.oy+gm.H+pw*0.0});
-  // overlays: solution + a dead end, as rounded strokes inside the channels
-  drawPath(ctx,gm,m.dead,cssVar('--dead'),pw*0.5,0.8);
-  drawPath(ctx,gm,m.sol,cssVar('--sol'),pw*0.52,0.85);
-  // optional centerline graph
-  if(showCtr){ctx.strokeStyle=cssVar('--ink3');ctx.globalAlpha=0.6;ctx.lineWidth=1;ctx.lineCap='butt';
-    for(var r2=0;r2<m.rows;r2++)for(var c2=0;c2<m.cols;c2++){var cl=m.g[r2][c2],aa=ctr(gm,cl);
-      if(!cl.E&&c2+1<m.cols)seg(ctx,aa,ctr(gm,m.g[r2][c2+1]));
-      if(!cl.S&&r2+1<m.rows)seg(ctx,aa,ctr(gm,m.g[r2+1][c2]));}
-    ctx.globalAlpha=1;}
-  endcaps(ctx,gm,m,wf,true);
-  // mazerunner: a ball of passage-diameter sitting in the channel at the entry
+  ctx.beginPath();ctx.moveTo(s0.x,s0.y);ctx.lineTo(s0.x,gm.oy);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(e0.x,e0.y);ctx.lineTo(e0.x,gm.oy+gm.H);ctx.stroke();
+  overlay(ctx,gm,m.dead,cssVar('--dead'),pw*0.5,0.85,{sm:sm,extendTip:true});
+  overlay(ctx,gm,m.sol,cssVar('--sol'),pw*0.52,0.9,{sm:sm});
+  if(showCtr){ctx.strokeStyle=cssVar('--ink3');ctx.globalAlpha=0.55;ctx.lineWidth=1;ctx.lineCap='butt';
+    for(var j=0;j<m.chains.length;j++){var p2=m.chains[j].map(function(cl){return ctr(gm,cl);});ctx.beginPath();buildSmooth(ctx,p2,sm);ctx.stroke();}ctx.globalAlpha=1;}
+  endcaps(ctx,gm,m);
   if(showRunner){ctx.beginPath();ctx.arc(s0.x,s0.y,pw/2,0,Math.PI*2);ctx.fillStyle=cssVar('--acc');ctx.globalAlpha=0.4;ctx.fill();ctx.globalAlpha=1;}
 }
 
-function seg(ctx,a,b){ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();}
 function line(ctx,x1,y1,x2,y2){ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();}
-function drawPath(ctx,gm,cells,color,w,alpha,sharp){
-  if(!cells||cells.length<2)return;
-  ctx.beginPath();var p0=ctr(gm,cells[0]);ctx.moveTo(p0.x,p0.y);
-  for(var i=1;i<cells.length;i++){var p=ctr(gm,cells[i]);ctx.lineTo(p.x,p.y);}
-  ctx.strokeStyle=color;ctx.lineWidth=Math.max(1.5,w);ctx.globalAlpha=alpha;
-  if(sharp){ctx.lineCap='butt';ctx.lineJoin='miter';ctx.miterLimit=10;}else{ctx.lineCap='round';ctx.lineJoin='round';}
-  ctx.stroke();ctx.globalAlpha=1;
-}
-function endcaps(ctx,gm,m,wf,curvy){
-  var s0=ctr(gm,m.g[0][0]),e0=ctr(gm,m.g[m.rows-1][m.cols-1]);
-  var r=Math.max(3.5,gm.cs*0.22);
-  dot(ctx,s0.x,s0.y,r,cssVar('--entry'));
-  dot(ctx,e0.x,e0.y,r,cssVar('--exit'));
-}
+function endcaps(ctx,gm,m){var s0=ctr(gm,m.g[0][0]),e0=ctr(gm,m.g[m.rows-1][m.cols-1]),r=Math.max(3.5,gm.cs*0.22);
+  dot(ctx,s0.x,s0.y,r,cssVar('--entry'));dot(ctx,e0.x,e0.y,r,cssVar('--exit'));}
 function dot(ctx,x,y,r,col){ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fillStyle=col;ctx.fill();ctx.strokeStyle='rgba(255,255,255,.6)';ctx.lineWidth=1.5;ctx.stroke();}
 
 function render(){
-  var wf=+document.getElementById('wf').value;
+  var wf=+document.getElementById('wf').value, sm=+document.getElementById('sm').value;
   var sr=document.getElementById('run').checked, sc=document.getElementById('ctr').checked;
+  document.getElementById('h2').textContent = sm<=0 ? 'Curvy (round corners)' : 'Curvy + smoothing ('+sm.toFixed(2)+')';
   drawSquare(document.getElementById('cv1'),maze,wf);
-  drawCurvy(document.getElementById('cv2'),maze,wf,sr,sc);
+  drawCurvy(document.getElementById('cv2'),maze,wf,sr,sc,sm);
 }
 function regen(){COLS=+document.getElementById('cells').value;ROWS=Math.round(COLS*0.78);maze=gen(COLS,ROWS);render();}
 
 document.getElementById('wf').addEventListener('input',function(){document.getElementById('wfv').textContent=(+this.value).toFixed(2);render();});
 document.getElementById('cells').addEventListener('input',function(){document.getElementById('cellsv').textContent=this.value;regen();});
+document.getElementById('sm').addEventListener('input',function(){document.getElementById('smv').textContent=(+this.value).toFixed(2);render();});
 document.getElementById('run').addEventListener('change',render);
 document.getElementById('ctr').addEventListener('change',render);
 document.getElementById('regen').addEventListener('click',regen);
-window.addEventListener('resize',function(){render();});
+window.addEventListener('resize',render);
 regen();
 </script>
 </body>
