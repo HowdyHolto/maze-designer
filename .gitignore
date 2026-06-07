@@ -6,3 +6,9 @@ files.zip
 
 # Scratch
 _unzipped/
+
+# Local Netlify folder
+.netlify
+
+# Machine-specific Claude settings (keep launch.json shared)
+.claude/settings.local.json
