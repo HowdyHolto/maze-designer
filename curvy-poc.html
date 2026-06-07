@@ -148,15 +148,16 @@ function buildSmooth(ctx,pts,s){
 }
 
 // overlay stroke for solution / dead-end (sharp in square mode, smoothed in curvy)
+// Overlay ends at the cell center; round (curvy) or square (sharp) cap extends ½·width, so the
+// hall-end nub sits with equal clearance to the 3 closed walls of the dead-end cell.
 function overlay(ctx,gm,cells,color,w,alpha,o){
   if(!cells||cells.length<2)return;
   var pts=cells.map(function(cl){return ctr(gm,cl);});
-  if(o.extendTip&&pts.length>=2){var n=pts.length,a=pts[n-2],b=pts[n-1],d=Math.hypot(b.x-a.x,b.y-a.y)||1;pts[n-1]={x:b.x+(b.x-a.x)/d*gm.cs*0.42,y:b.y+(b.y-a.y)/d*gm.cs*0.42};}
   ctx.beginPath();
   if(o.sharp){ctx.moveTo(pts[0].x,pts[0].y);for(var i=1;i<pts.length;i++)ctx.lineTo(pts[i].x,pts[i].y);}
   else buildSmooth(ctx,pts,o.sm||0);
   ctx.strokeStyle=color;ctx.lineWidth=Math.max(1.5,w);ctx.globalAlpha=alpha;
-  if(o.sharp){ctx.lineCap='butt';ctx.lineJoin='miter';ctx.miterLimit=10;}else{ctx.lineCap='round';ctx.lineJoin='round';}
+  if(o.sharp){ctx.lineCap='square';ctx.lineJoin='miter';ctx.miterLimit=10;}else{ctx.lineCap='round';ctx.lineJoin='round';}
   ctx.stroke();ctx.globalAlpha=1;
 }
 
@@ -165,7 +166,7 @@ function drawSquare(canvas,m,wf){
   var gm=geom(canvas,m),ctx=gm.ctx,cs=gm.cs;
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle=cssVar('--chan');ctx.fillRect(gm.ox,gm.oy,gm.W,gm.H);
-  overlay(ctx,gm,m.dead,cssVar('--dead'),cs*(1-wf)*0.55,0.8,{sharp:true,extendTip:true});
+  overlay(ctx,gm,m.dead,cssVar('--dead'),cs*(1-wf)*0.55,0.8,{sharp:true});
   overlay(ctx,gm,m.sol,cssVar('--sol'),cs*(1-wf)*0.55,0.9,{sharp:true});
   ctx.strokeStyle=cssVar('--wall');ctx.lineWidth=Math.max(1,cs*wf*0.8);ctx.lineCap='square';ctx.lineJoin='miter';
   for(var r=0;r<m.rows;r++)for(var c=0;c<m.cols;c++){var cell=m.g[r][c],x=gm.ox+c*cs,y=gm.oy+r*cs;
@@ -184,7 +185,7 @@ function drawCurvy(canvas,m,wf,showRunner,showCtr,sm){
   var s0=ctr(gm,m.g[0][0]),e0=ctr(gm,m.g[m.rows-1][m.cols-1]);
   ctx.beginPath();ctx.moveTo(s0.x,s0.y);ctx.lineTo(s0.x,gm.oy);ctx.stroke();
   ctx.beginPath();ctx.moveTo(e0.x,e0.y);ctx.lineTo(e0.x,gm.oy+gm.H);ctx.stroke();
-  overlay(ctx,gm,m.dead,cssVar('--dead'),pw*0.5,0.85,{sm:sm,extendTip:true});
+  overlay(ctx,gm,m.dead,cssVar('--dead'),pw*0.5,0.85,{sm:sm});
   overlay(ctx,gm,m.sol,cssVar('--sol'),pw*0.52,0.9,{sm:sm});
   if(showCtr){ctx.strokeStyle=cssVar('--ink3');ctx.globalAlpha=0.55;ctx.lineWidth=1;ctx.lineCap='butt';
     for(var j=0;j<m.chains.length;j++){var p2=m.chains[j].map(function(cl){return ctr(gm,cl);});ctx.beginPath();buildSmooth(ctx,p2,sm);ctx.stroke();}ctx.globalAlpha=1;}
