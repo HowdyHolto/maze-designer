@@ -115,9 +115,9 @@ function drawSquare(canvas,m,wf){
   var gm=geom(canvas,m),ctx=gm.ctx,cs=gm.cs;
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle=cssVar('--chan');ctx.fillRect(gm.ox,gm.oy,gm.W,gm.H);
-  drawPath(ctx,gm,m.dead,cssVar('--dead'),cs*(1-wf)*0.55,0.7);
-  drawPath(ctx,gm,m.sol,cssVar('--sol'),cs*(1-wf)*0.55,0.85);
-  ctx.strokeStyle=cssVar('--wall');ctx.lineWidth=Math.max(1,cs*wf*0.8);ctx.lineCap='butt';
+  drawPath(ctx,gm,m.dead,cssVar('--dead'),cs*(1-wf)*0.55,0.7,true);
+  drawPath(ctx,gm,m.sol,cssVar('--sol'),cs*(1-wf)*0.55,0.85,true);
+  ctx.strokeStyle=cssVar('--wall');ctx.lineWidth=Math.max(1,cs*wf*0.8);ctx.lineCap='square';ctx.lineJoin='miter';
   for(var r=0;r<m.rows;r++)for(var c=0;c<m.cols;c++){
     var cell=m.g[r][c],x=gm.ox+c*cs,y=gm.oy+r*cs;
     if(cell.N){line(ctx,x,y,x+cs,y);} if(cell.S){line(ctx,x,y+cs,x+cs,y+cs);}
@@ -158,11 +158,13 @@ function drawCurvy(canvas,m,wf,showRunner,showCtr){
 
 function seg(ctx,a,b){ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();}
 function line(ctx,x1,y1,x2,y2){ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();}
-function drawPath(ctx,gm,cells,color,w,alpha){
+function drawPath(ctx,gm,cells,color,w,alpha,sharp){
   if(!cells||cells.length<2)return;
   ctx.beginPath();var p0=ctr(gm,cells[0]);ctx.moveTo(p0.x,p0.y);
   for(var i=1;i<cells.length;i++){var p=ctr(gm,cells[i]);ctx.lineTo(p.x,p.y);}
-  ctx.strokeStyle=color;ctx.lineWidth=Math.max(1.5,w);ctx.lineCap='round';ctx.lineJoin='round';ctx.globalAlpha=alpha;ctx.stroke();ctx.globalAlpha=1;
+  ctx.strokeStyle=color;ctx.lineWidth=Math.max(1.5,w);ctx.globalAlpha=alpha;
+  if(sharp){ctx.lineCap='butt';ctx.lineJoin='miter';ctx.miterLimit=10;}else{ctx.lineCap='round';ctx.lineJoin='round';}
+  ctx.stroke();ctx.globalAlpha=1;
 }
 function endcaps(ctx,gm,m,wf,curvy){
   var s0=ctr(gm,m.g[0][0]),e0=ctr(gm,m.g[m.rows-1][m.cols-1]);
