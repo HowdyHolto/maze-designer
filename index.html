@@ -246,7 +246,29 @@ function draw(){var W=cvs.width,H=cvs.height,dk=isDark();ctx.clearRect(0,0,W,H);
 // boundary, so the user sees real passage vs wall widths before generating.
 function drawGridPreview(C){if(S.gridType!=='ortho')return;var cs=S.cellSize,cols=Math.floor(S.bW/cs),rows=Math.floor(S.bH/cs),ox=(S.bW-cols*cs)/2,oy=(S.bH-rows*cs)/2,ps=cs*S.vs,wpx=Math.max(0.5,cs*S.wallFrac*S.vs*0.8);ctx.save();ctx.strokeStyle=C.wall;ctx.globalAlpha=0.14;ctx.lineWidth=wpx;ctx.lineCap='square';for(var r=0;r<rows;r++){for(var c=0;c<cols;c++){var cx=ox+(c+0.5)*cs,cy=oy+(r+0.5)*cs;if(S.bDone&&S.boundary.length>=3&&!ptInPoly({x:cx,y:cy},S.boundary))continue;var tl=w2s(cx-cs/2,cy-cs/2);ctx.strokeRect(tl.x,tl.y,ps,ps);}}ctx.restore();}
 // Build a (optionally smoothed) path through screen-space points into the current ctx path.
-function smoothCanvasPath(ctx,pts,s){if(pts.length<3||s<=0){ctx.moveTo(pts[0].x,pts[0].y);for(var i=1;i<pts.length;i++)ctx.lineTo(pts[i].x,pts[i].y);return;}ctx.moveTo(pts[0].x,pts[0].y);for(var i=1;i<pts.length-1;i++){var p0=pts[i-1],p1=pts[i],p2=pts[i+1];var d1=Math.hypot(p1.x-p0.x,p1.y-p0.y)||1,d2=Math.hypot(p2.x-p1.x,p2.y-p1.y)||1;var r=Math.min(d1,d2)*0.5*s;var a={x:p1.x+(p0.x-p1.x)/d1*r,y:p1.y+(p0.y-p1.y)/d1*r},b={x:p1.x+(p2.x-p1.x)/d2*r,y:p1.y+(p2.y-p1.y)/d2*r};ctx.lineTo(a.x,a.y);ctx.quadraticCurveTo(p1.x,p1.y,b.x,b.y);}ctx.lineTo(pts[pts.length-1].x,pts[pts.length-1].y);}
+// Arc-fillet corner rounding (DEFAULT). Each turn becomes a circular arc tangent to both edges,
+// radius r = min(d1,d2)*0.5*s. Collinear points stay straight. Closed under offset (CAM-clean).
+function smoothCanvasPath(ctx,pts,s){
+  if(pts.length<3||s<=0){ctx.moveTo(pts[0].x,pts[0].y);for(var i=1;i<pts.length;i++)ctx.lineTo(pts[i].x,pts[i].y);return;}
+  ctx.moveTo(pts[0].x,pts[0].y);
+  for(var i=1;i<pts.length-1;i++){
+    var p0=pts[i-1],p1=pts[i],p2=pts[i+1];
+    var d1=Math.hypot(p1.x-p0.x,p1.y-p0.y)||1,d2=Math.hypot(p2.x-p1.x,p2.y-p1.y)||1;
+    var r=Math.min(d1,d2)*0.5*s;
+    ctx.arcTo(p1.x,p1.y,p2.x,p2.y,r);
+  }
+  ctx.lineTo(pts[pts.length-1].x,pts[pts.length-1].y);
+}
+// PARKED: previous quad-Bézier smoother. Retained for a future "soft/organic" style; not wired in.
+function smoothBezierPath(ctx,pts,s){
+  if(pts.length<3||s<=0){ctx.moveTo(pts[0].x,pts[0].y);for(var i=1;i<pts.length;i++)ctx.lineTo(pts[i].x,pts[i].y);return;}
+  ctx.moveTo(pts[0].x,pts[0].y);
+  for(var i=1;i<pts.length-1;i++){var p0=pts[i-1],p1=pts[i],p2=pts[i+1];
+    var d1=Math.hypot(p1.x-p0.x,p1.y-p0.y)||1,d2=Math.hypot(p2.x-p1.x,p2.y-p1.y)||1;var r=Math.min(d1,d2)*0.5*s;
+    var a={x:p1.x+(p0.x-p1.x)/d1*r,y:p1.y+(p0.y-p1.y)/d1*r},b={x:p1.x+(p2.x-p1.x)/d2*r,y:p1.y+(p2.y-p1.y)/d2*r};
+    ctx.lineTo(a.x,a.y);ctx.quadraticCurveTo(p1.x,p1.y,b.x,b.y);}
+  ctx.lineTo(pts[pts.length-1].x,pts[pts.length-1].y);
+}
 // Smoothed SVG path "d" string through mm-space points (mirrors smoothCanvasPath).
 function smoothSvgD(pts,s){var f=function(p){return p.x.toFixed(2)+' '+p.y.toFixed(2);};if(pts.length<3||s<=0){var d='M '+f(pts[0]);for(var i=1;i<pts.length;i++)d+=' L '+f(pts[i]);return d;}var d='M '+f(pts[0]);for(var i=1;i<pts.length-1;i++){var p0=pts[i-1],p1=pts[i],p2=pts[i+1];var d1=Math.hypot(p1.x-p0.x,p1.y-p0.y)||1,d2=Math.hypot(p2.x-p1.x,p2.y-p1.y)||1;var r=Math.min(d1,d2)*0.5*s;var a={x:p1.x+(p0.x-p1.x)/d1*r,y:p1.y+(p0.y-p1.y)/d1*r},b={x:p1.x+(p2.x-p1.x)/d2*r,y:p1.y+(p2.y-p1.y)/d2*r};d+=' L '+f(a)+' Q '+f(p1)+' '+f(b);}d+=' L '+f(pts[pts.length-1]);return d;}
 // SVG d-string for a cell list (used by overlays); smoothed in curvy mode.
