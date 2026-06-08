@@ -49,3 +49,13 @@ dead-ends are rounded by the wall-tip caps (= clean stadiums for free). Net: zer
 - **Phase 2 — Export Kit** (raw layered SVG + polished both-layer cut geometry + info doc + zip), built
   on the arc engine. Then merge path `curvy → dev → main` after sign-off.
 - Prod backup tag: `backup-prod-2026-06-07`.
+
+## Follow-up fixes (preview feedback)
+- **Hairline seams** (commit 23e2d60): wall-colored island/tip repaints butted against the carved
+  channels left a 1px antialiasing sliver. Sealed with a thin same-color stroke on the wall draws.
+- **Perimeter wall + door gates** (commit 58a8634): grid was fit to the *board*, so outermost passages
+  clipped the boundary (no rim). Now `gridFit()` fits the grid to the **boundary** inset by
+  `wall+passage/2` (shared by `buildPreviewGrid`+`genOrtho`), leaving a full perimeter wall; the maze
+  generates inside it. Doors ray-cast (`boundaryHit`) from the door cell through the new wall to the
+  actual boundary edge, so entry/exit gates still reach the rim — canvas render + SVG export. Verified
+  rect+hex perimeter, door notches, solve, square mode, SVG validity.
