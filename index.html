@@ -334,6 +334,32 @@ function wallTips(cmap){cmap=cmap||S.cmap;var b=_bounds(cmap),out=[];
     var e=0;if(_wallH(cmap,i,j))e++;if(_wallH(cmap,i-1,j))e++;if(_wallV(cmap,i,j))e++;if(_wallV(cmap,i,j-1))e++;
     if(e===1)out.push([i,j]);}
   return out;}
+// world-space rounded-rect path on the canvas (uses w2s + S.vs).
+function roundRectPath(x,y,w,h,r){var s0=w2s(x,y),sw=w*S.vs,sh=h*S.vs,rs=Math.min(r*S.vs,sw/2,sh/2);
+  ctx.beginPath();ctx.moveTo(s0.x+rs,s0.y);
+  ctx.arcTo(s0.x+sw,s0.y,s0.x+sw,s0.y+sh,rs);ctx.arcTo(s0.x+sw,s0.y+sh,s0.x,s0.y+sh,rs);
+  ctx.arcTo(s0.x,s0.y+sh,s0.x,s0.y,rs);ctx.arcTo(s0.x,s0.y,s0.x+sw,s0.y,rs);ctx.closePath();}
+// Repaint islands (erase blocky footprint to bg, redraw rounded) + additive rounded caps on wall tips.
+function drawCurvyIslands(C){
+  var cs=S.cellSize,passage=cs*(1-S.wallFrac),HALF=(cs-passage)/2,r=HALF*(S.smoothing||0);
+  var ref=null;for(var i=0;i<S.cells.length;i++){if(S.cells[i].inside){ref=S.cells[i];break;}}if(!ref)return;
+  var ox=ref.cx-cs/2-ref.col*cs, oy=ref.cy-cs/2-ref.row*cs;
+  function X(i){return ox+i*cs;}function Y(j){return oy+j*cs;}
+  var comps=islandComponents();
+  // pass 0 erase (bg, square), pass 1 draw (wall, rounded)
+  for(var pass=0;pass<2;pass++){
+    ctx.fillStyle=pass?C.wall:C.bg;var rad=pass?r:0;
+    for(var ci=0;ci<comps.length;ci++){var cp=comps[ci];
+      for(var ei=0;ei<cp.edges.length;ei++){var a=cp.edges[ei][0],b=cp.edges[ei][1],ax=X(a[0]),ay=Y(a[1]),bx=X(b[0]),by=Y(b[1]);
+        var rx,ry,rw,rh;
+        if(Math.abs(ax-bx)<1e-6){rx=ax-HALF;ry=Math.min(ay,by);rw=2*HALF;rh=Math.abs(by-ay);}
+        else{rx=Math.min(ax,bx);ry=ay-HALF;rw=Math.abs(bx-ax);rh=2*HALF;}
+        var s0=w2s(rx,ry);ctx.fillRect(s0.x,s0.y,rw*S.vs,rh*S.vs);}
+      for(var vi=0;vi<cp.verts.length;vi++){var vx=X(cp.verts[vi][0]),vy=Y(cp.verts[vi][1]);roundRectPath(vx-HALF,vy-HALF,2*HALF,2*HALF,rad);ctx.fill();}}}
+  // wall-tip caps: additive rounded square (never redraw the edge)
+  var tips=wallTips();ctx.fillStyle=C.wall;
+  for(var ti=0;ti<tips.length;ti++){var tx=X(tips[ti][0]),ty=Y(tips[ti][1]);roundRectPath(tx-HALF,ty-HALF,2*HALF,2*HALF,r);ctx.fill();}
+}
 // Curvy render: a solid wall plate (clipped to the boundary) with the passage chains carved as
 // round-stroked, optionally-smoothed channels. Pure render — the maze data is unchanged.
 function drawCurvyMaze(C){
@@ -355,6 +381,7 @@ function drawCurvyMaze(C){
   for(var e=0;e<S.doors.entries.length;e++)stub(S.doors.entries[e]);
   for(var x=0;x<S.doors.exits.length;x++)stub(S.doors.exits[x]);
   drawCurvyFillets(C);
+  drawCurvyIslands(C);
   ctx.restore();
   if(S.layers.bnd&&bp.length>=3){ctx.beginPath();var r0=w2s(bp[0].x,bp[0].y);ctx.moveTo(r0.x,r0.y);for(var i=1;i<bp.length;i++){var rp=w2s(bp[i].x,bp[i].y);ctx.lineTo(rp.x,rp.y);}ctx.closePath();ctx.strokeStyle=C.bndStr;ctx.lineWidth=1.5;ctx.stroke();}
 }
