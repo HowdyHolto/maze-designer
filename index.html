@@ -350,7 +350,9 @@ function drawCurvyIslands(C){
   // their dead-ends are already rounded by the wall-tip caps below; erase+repainting them would leave
   // seam artifacts at high braid. So filter to isolated single-vertex islands.
   var comps=islandComponents().filter(function(c){return c.verts.length===1&&c.edges.length===0;});
-  // pass 0 erase (bg, square), pass 1 draw (wall, rounded)
+  // pass 0 erase (bg, square), pass 1 draw (wall, rounded). A thin same-color stroke on the wall
+  // draws seals the 1px antialiasing sliver where a repaint edge butts against a carved channel.
+  ctx.lineJoin='round';ctx.lineWidth=1.2;ctx.strokeStyle=C.wall;
   for(var pass=0;pass<2;pass++){
     ctx.fillStyle=pass?C.wall:C.bg;var rad=pass?r:0;
     for(var ci=0;ci<comps.length;ci++){var cp=comps[ci];
@@ -359,10 +361,10 @@ function drawCurvyIslands(C){
         if(Math.abs(ax-bx)<1e-6){rx=ax-HALF;ry=Math.min(ay,by);rw=2*HALF;rh=Math.abs(by-ay);}
         else{rx=Math.min(ax,bx);ry=ay-HALF;rw=Math.abs(bx-ax);rh=2*HALF;}
         var s0=w2s(rx,ry);ctx.fillRect(s0.x,s0.y,rw*S.vs,rh*S.vs);}
-      for(var vi=0;vi<cp.verts.length;vi++){var vx=X(cp.verts[vi][0]),vy=Y(cp.verts[vi][1]);roundRectPath(vx-HALF,vy-HALF,2*HALF,2*HALF,rad);ctx.fill();}}}
+      for(var vi=0;vi<cp.verts.length;vi++){var vx=X(cp.verts[vi][0]),vy=Y(cp.verts[vi][1]);roundRectPath(vx-HALF,vy-HALF,2*HALF,2*HALF,rad);ctx.fill();if(pass)ctx.stroke();}}}
   // wall-tip caps: additive rounded square (never redraw the edge)
   var tips=wallTips();ctx.fillStyle=C.wall;
-  for(var ti=0;ti<tips.length;ti++){var tx=X(tips[ti][0]),ty=Y(tips[ti][1]);roundRectPath(tx-HALF,ty-HALF,2*HALF,2*HALF,r);ctx.fill();}
+  for(var ti=0;ti<tips.length;ti++){var tx=X(tips[ti][0]),ty=Y(tips[ti][1]);roundRectPath(tx-HALF,ty-HALF,2*HALF,2*HALF,r);ctx.fill();ctx.stroke();}
 }
 // Curvy render: a solid wall plate (clipped to the boundary) with the passage chains carved as
 // round-stroked, optionally-smoothed channels. Pure render — the maze data is unchanged.
