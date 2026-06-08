@@ -307,6 +307,33 @@ function smoothBezierSvgD(pts,s){
 function cellsSvgD(cells){var pts=cells.map(function(c){return {x:c.cx,y:c.cy};});return (S.renderMode==='curvy'&&S.gridType==='ortho')?smoothSvgD(pts,S.smoothing||0):smoothSvgD(pts,0);}
 // Decompose the ortho passage graph into chains (cell runs between endpoints/junctions) for curvy rendering.
 function buildChains(){if(S.gridType!=='ortho')return[];var DV={N:[0,-1],S:[0,1],W:[-1,0],E:[1,0]};function dg(c){var d=0;if(!c.walls.N)d++;if(!c.walls.S)d++;if(!c.walls.E)d++;if(!c.walls.W)d++;return d;}function nbf(c,k){return S.cmap[cellKey(c.col+DV[k][0],c.row+DV[k][1])];}function ek(a,b){return a.id<b.id?a.id+'|'+b.id:b.id+'|'+a.id;}var used={},out=[];for(var i=0;i<S.cells.length;i++){var cell=S.cells[i];if(!cell.inside||dg(cell)===2)continue;['N','S','E','W'].forEach(function(k){if(cell.walls[k])return;var nx=nbf(cell,k);if(!nx||!nx.inside||used[ek(cell,nx)])return;if(cell._open&&nx._open)return;var chain=[cell],prev=cell,cu=nx;while(true){used[ek(prev,cu)]=1;chain.push(cu);if(dg(cu)!==2||cu._open)break;var nextc=null;['N','S','E','W'].forEach(function(kk){if(cu.walls[kk])return;var nn=nbf(cu,kk);if(!nn||!nn.inside||nn===prev)return;nextc=nn;});if(!nextc)break;prev=cu;cu=nextc;}out.push(chain);});}return out;}
+// Wall lattice over inside cells. Vertex (i,j) = top-left corner of cell(i,j). A lattice edge is
+// "wall" if the cell-boundary is closed, or it is an inside/outside boundary (frame). Islands =
+// connected components of interior wall NOT reaching the frame. (cmap default S.cmap; N optional.)
+function _wallH(cmap,i,j){var b=cmap[i+','+j],a=cmap[i+','+(j-1)];var bIn=b&&b.inside,aIn=a&&a.inside;if(!bIn&&!aIn)return false;if(bIn&&aIn)return b.walls.N;return true;}
+function _wallV(cmap,i,j){var rt=cmap[i+','+j],lf=cmap[(i-1)+','+j];var rIn=rt&&rt.inside,lIn=lf&&lf.inside;if(!rIn&&!lIn)return false;if(rIn&&lIn)return rt.walls.W;return true;}
+function _allIn(cmap,i,j){var k=[cmap[(i-1)+','+(j-1)],cmap[i+','+(j-1)],cmap[(i-1)+','+j],cmap[i+','+j]];for(var t=0;t<4;t++)if(!(k[t]&&k[t].inside))return false;return true;}
+function _frameVtx(cmap,i,j){var k=[cmap[(i-1)+','+(j-1)],cmap[i+','+(j-1)],cmap[(i-1)+','+j],cmap[i+','+j]],anyIn=false,anyOut=false;for(var t=0;t<4;t++){if(k[t]&&k[t].inside)anyIn=true;else anyOut=true;}return anyIn&&anyOut;}
+function _bounds(cmap){var c0=1e9,c1=-1e9,r0=1e9,r1=-1e9;for(var key in cmap){var cl=cmap[key];if(!cl.inside)continue;if(cl.col<c0)c0=cl.col;if(cl.col>c1)c1=cl.col;if(cl.row<r0)r0=cl.row;if(cl.row>r1)r1=cl.row;}return {I0:c0,I1:c1+1,J0:r0,J1:r1+1};}
+function islandComponents(cmap,N){cmap=cmap||S.cmap;var b=_bounds(cmap),I0=b.I0,I1=b.I1,J0=b.J0,J1=b.J1;
+  function nbrs(i,j){var a=[];if(_wallH(cmap,i,j))a.push([i+1,j]);if(_wallH(cmap,i-1,j))a.push([i-1,j]);if(_wallV(cmap,i,j))a.push([i,j+1]);if(_wallV(cmap,i,j-1))a.push([i,j-1]);return a;}
+  var vid=function(i,j){return i+'_'+j;},comp={},st=[];
+  for(var i=I0;i<=I1;i++)for(var j=J0;j<=J1;j++)if(_frameVtx(cmap,i,j))st.push([i,j]);
+  while(st.length){var p=st.pop(),id=vid(p[0],p[1]);if(comp[id]!==undefined)continue;comp[id]=-1;var ns=nbrs(p[0],p[1]);for(var k=0;k<ns.length;k++)if(comp[vid(ns[k][0],ns[k][1])]===undefined)st.push(ns[k]);}
+  var out=[];
+  for(var i=I0;i<=I1;i++)for(var j=J0;j<=J1;j++){if(!_allIn(cmap,i,j)||comp[vid(i,j)]!==undefined)continue;
+    var q=[[i,j]],verts=[],edges=[];comp[vid(i,j)]=out.length;
+    while(q.length){var p=q.pop();verts.push(p);var cand=[];
+      if(_wallH(cmap,p[0],p[1]))cand.push([p[0]+1,p[1]]);if(_wallH(cmap,p[0]-1,p[1]))cand.push([p[0]-1,p[1]]);
+      if(_wallV(cmap,p[0],p[1]))cand.push([p[0],p[1]+1]);if(_wallV(cmap,p[0],p[1]-1))cand.push([p[0],p[1]-1]);
+      for(var k=0;k<cand.length;k++){var nb=cand[k];edges.push([p,nb]);if(comp[vid(nb[0],nb[1])]===undefined){comp[vid(nb[0],nb[1])]=out.length;q.push(nb);}}}
+    out.push({verts:verts,edges:edges});}
+  return out;}
+function wallTips(cmap){cmap=cmap||S.cmap;var b=_bounds(cmap),out=[];
+  for(var i=b.I0;i<=b.I1;i++)for(var j=b.J0;j<=b.J1;j++){if(!_allIn(cmap,i,j))continue;
+    var e=0;if(_wallH(cmap,i,j))e++;if(_wallH(cmap,i-1,j))e++;if(_wallV(cmap,i,j))e++;if(_wallV(cmap,i,j-1))e++;
+    if(e===1)out.push([i,j]);}
+  return out;}
 // Curvy render: a solid wall plate (clipped to the boundary) with the passage chains carved as
 // round-stroked, optionally-smoothed channels. Pure render — the maze data is unchanged.
 function drawCurvyMaze(C){
