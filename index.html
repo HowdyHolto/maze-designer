@@ -311,6 +311,7 @@ function buildChains(){if(S.gridType!=='ortho')return[];var DV={N:[0,-1],S:[0,1]
 // round-stroked, optionally-smoothed channels. Pure render — the maze data is unchanged.
 function drawCurvyMaze(C){
   if(S.gridType!=='ortho'){drawPolarWalls(C);return;}
+  if(!(S.vs>0))return;   // canvas not sized yet (headless/early) — skip; avoids negative arc radius
   var pw=Math.max(0.7,S.cellSize*(1-S.wallFrac)*S.vs),sm=S.smoothing||0,bp=S.boundary;
   ctx.save();
   ctx.beginPath();
