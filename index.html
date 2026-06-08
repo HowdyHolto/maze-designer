@@ -269,8 +269,40 @@ function smoothBezierPath(ctx,pts,s){
     ctx.lineTo(a.x,a.y);ctx.quadraticCurveTo(p1.x,p1.y,b.x,b.y);}
   ctx.lineTo(pts[pts.length-1].x,pts[pts.length-1].y);
 }
-// Smoothed SVG path "d" string through mm-space points (mirrors smoothCanvasPath).
-function smoothSvgD(pts,s){var f=function(p){return p.x.toFixed(2)+' '+p.y.toFixed(2);};if(pts.length<3||s<=0){var d='M '+f(pts[0]);for(var i=1;i<pts.length;i++)d+=' L '+f(pts[i]);return d;}var d='M '+f(pts[0]);for(var i=1;i<pts.length-1;i++){var p0=pts[i-1],p1=pts[i],p2=pts[i+1];var d1=Math.hypot(p1.x-p0.x,p1.y-p0.y)||1,d2=Math.hypot(p2.x-p1.x,p2.y-p1.y)||1;var r=Math.min(d1,d2)*0.5*s;var a={x:p1.x+(p0.x-p1.x)/d1*r,y:p1.y+(p0.y-p1.y)/d1*r},b={x:p1.x+(p2.x-p1.x)/d2*r,y:p1.y+(p2.y-p1.y)/d2*r};d+=' L '+f(a)+' Q '+f(p1)+' '+f(b);}d+=' L '+f(pts[pts.length-1]);return d;}
+// Arc-fillet SVG path (DEFAULT). Emits L + A (true circular arcs). Mirrors smoothCanvasPath/arcTo.
+function smoothSvgD(pts,s){
+  var f=function(p){return p.x.toFixed(2)+' '+p.y.toFixed(2);};
+  if(pts.length<3||s<=0){var d='M '+f(pts[0]);for(var i=1;i<pts.length;i++)d+=' L '+f(pts[i]);return d;}
+  var d='M '+f(pts[0]);
+  for(var i=1;i<pts.length-1;i++){
+    var p0=pts[i-1],p1=pts[i],p2=pts[i+1];
+    var d1=Math.hypot(p1.x-p0.x,p1.y-p0.y)||1,d2=Math.hypot(p2.x-p1.x,p2.y-p1.y)||1;
+    var r=Math.min(d1,d2)*0.5*s;
+    var u1x=(p0.x-p1.x)/d1,u1y=(p0.y-p1.y)/d1,u2x=(p2.x-p1.x)/d2,u2y=(p2.y-p1.y)/d2;
+    var dot=Math.max(-1,Math.min(1,u1x*u2x+u1y*u2y));
+    var theta=Math.acos(dot);
+    if(theta>=Math.PI-1e-6||r<1e-6){d+=' L '+f(p1);continue;}      // collinear -> straight
+    var t=Math.min(r/Math.tan(theta/2),d1,d2);
+    var rr=t*Math.tan(theta/2);                                    // radius consistent with clamped t
+    var a={x:p1.x+u1x*t,y:p1.y+u1y*t},b={x:p1.x+u2x*t,y:p1.y+u2y*t};
+    var cross=u1x*u2y-u1y*u2x;                                     // SVG y-down: cross<0 => CW turn
+    var sweep=cross<0?1:0;
+    d+=' L '+f(a)+' A '+rr.toFixed(2)+' '+rr.toFixed(2)+' 0 0 '+sweep+' '+f(b);
+  }
+  d+=' L '+f(pts[pts.length-1]);
+  return d;
+}
+// PARKED: previous quad-Bézier SVG smoother.
+function smoothBezierSvgD(pts,s){
+  var f=function(p){return p.x.toFixed(2)+' '+p.y.toFixed(2);};
+  if(pts.length<3||s<=0){var d='M '+f(pts[0]);for(var i=1;i<pts.length;i++)d+=' L '+f(pts[i]);return d;}
+  var d='M '+f(pts[0]);
+  for(var i=1;i<pts.length-1;i++){var p0=pts[i-1],p1=pts[i],p2=pts[i+1];
+    var d1=Math.hypot(p1.x-p0.x,p1.y-p0.y)||1,d2=Math.hypot(p2.x-p1.x,p2.y-p1.y)||1;var r=Math.min(d1,d2)*0.5*s;
+    var a={x:p1.x+(p0.x-p1.x)/d1*r,y:p1.y+(p0.y-p1.y)/d1*r},b={x:p1.x+(p2.x-p1.x)/d2*r,y:p1.y+(p2.y-p1.y)/d2*r};
+    d+=' L '+f(a)+' Q '+f(p1)+' '+f(b);}
+  d+=' L '+f(pts[pts.length-1]);return d;
+}
 // SVG d-string for a cell list (used by overlays); smoothed in curvy mode.
 function cellsSvgD(cells){var pts=cells.map(function(c){return {x:c.cx,y:c.cy};});return (S.renderMode==='curvy'&&S.gridType==='ortho')?smoothSvgD(pts,S.smoothing||0):smoothSvgD(pts,0);}
 // Decompose the ortho passage graph into chains (cell runs between endpoints/junctions) for curvy rendering.
