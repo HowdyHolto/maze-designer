@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smoothing style — Bézier vs Arc-fillet</title>
+<style>
+  :root{--ink:#e9e8e2;--mut:#8a8980;--bez:#E08A2B;--arc:#3FB6C9}
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0e0e0d;color:var(--ink);padding:22px 26px 70px}
+  h1{font-size:17px;margin:0 0 2px}
+  .sub{color:var(--mut);font-size:12.5px;margin:0 0 16px;max-width:1000px}
+  .controls{display:flex;gap:24px;align-items:center;flex-wrap:wrap;background:#1a1a18;border:1px solid #2a2a27;border-radius:12px;padding:12px 16px;margin-bottom:18px}
+  .controls label{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut)}
+  input[type=range]{width:220px;accent-color:#5DCAA5;vertical-align:middle}
+  button{background:#2a2a27;color:var(--ink);border:1px solid #3a3a36;border-radius:8px;padding:8px 14px;cursor:pointer}
+  button:hover{background:#34342f}
+  .val{color:#5DCAA5}
+  .row{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
+  .panel{display:flex;flex-direction:column;gap:6px}
+  .panel h2{font-size:12.5px;margin:0;font-weight:600}
+  .panel .tag{font-size:11px;color:var(--mut);font-weight:400}
+  canvas{border-radius:10px;border:1px solid #2a2a27;display:block;background:#fff}
+  .legend{display:flex;gap:16px;font-size:12px;color:var(--mut);margin-top:4px}
+  .legend b{font-weight:600}
+  .bez{color:var(--bez)} .arc{color:var(--arc)}
+</style></head>
+<body>
+  <h1>Smoothing style — Bézier vs uniform Arc-fillet</h1>
+  <p class="sub">Same maze, same cut-back distance. <b class="bez">Bézier</b> = today's quadratic curves (flow, varying curvature). <b class="arc">Arc-fillet</b> = constant-radius circular corners (CNC-native G2/G3, predictable radii). Drag smoothing; watch the corners. The zoom on the right magnifies one 90° corner so you can see the actual divergence.</p>
+
+  <div class="controls">
+    <label>Smoothing <span class="val" id="smOut">100%</span><br><input id="sm" type="range" min="0" max="1" step="0.05" value="1"></label>
+    <button id="regen">↻ New maze</button>
+  </div>
+
+  <div class="row">
+    <div class="panel"><h2 class="bez">Bézier (current)</h2><canvas id="bez"></canvas></div>
+    <div class="panel"><h2 class="arc">Arc-fillet (uniform radii)</h2><canvas id="arc"></canvas></div>
+    <div class="panel"><h2>One corner, magnified <span class="tag">both overlaid</span></h2><canvas id="zoom"></canvas>
+      <div class="legend"><span class="bez">▬ Bézier</span><span class="arc">▬ Arc</span><span>○ ideal circle</span></div>
+    </div>
+  </div>
+
+<script>
+var N=6, CELL=58, WALLFRAC=0.30, MARGIN=16;
+var PASSAGE=CELL*(1-WALLFRAC), HALF=(CELL-PASSAGE)/2;
+var cells=[], cmap={};
+function key(c,r){return c+','+r;}
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+function build(seed,density){cells=[];cmap={};for(var r=0;r<N;r++)for(var c=0;c<N;c++){var cell={col:c,row:r,cx:c*CELL+CELL/2,cy:r*CELL+CELL/2,id:key(c,r),walls:{N:true,S:true,E:true,W:true}};cells.push(cell);cmap[cell.id]=cell;}var rnd=mulberry32(seed);for(var i=0;i<cells.length;i++){var cell=cells[i],rt=cmap[key(cell.col+1,cell.row)],dn=cmap[key(cell.col,cell.row+1)];if(rt&&rnd()<density){cell.walls.E=false;rt.walls.W=false;}if(dn&&rnd()<density){cell.walls.S=false;dn.walls.N=false;}}}
+function deg(c){var d=0;if(!c.walls.N)d++;if(!c.walls.S)d++;if(!c.walls.E)d++;if(!c.walls.W)d++;return d;}
+function buildChains(){var DV={N:[0,-1],S:[0,1],W:[-1,0],E:[1,0]};function nbf(c,k){return cmap[key(c.col+DV[k][0],c.row+DV[k][1])];}function ek(a,b){return a.id<b.id?a.id+'|'+b.id:b.id+'|'+a.id;}var used={},out=[];for(var i=0;i<cells.length;i++){var cell=cells[i];if(deg(cell)===2)continue;['N','S','E','W'].forEach(function(k){if(cell.walls[k])return;var nx=nbf(cell,k);if(!nx||used[ek(cell,nx)])return;var chain=[cell],prev=cell,cu=nx;while(true){used[ek(prev,cu)]=1;chain.push(cu);if(deg(cu)!==2)break;var nc=null;['N','S','E','W'].forEach(function(kk){if(cu.walls[kk])return;var nn=nbf(cu,kk);if(!nn||nn===prev)return;nc=nn;});if(!nc)break;prev=cu;cu=nc;}out.push(chain);});}return out;}
+// Bézier corner rounding (current app)
+function bezPath(ctx,pts,s){if(pts.length<3||s<=0){ctx.moveTo(pts[0].x,pts[0].y);for(var i=1;i<pts.length;i++)ctx.lineTo(pts[i].x,pts[i].y);return;}ctx.moveTo(pts[0].x,pts[0].y);for(var i=1;i<pts.length-1;i++){var p0=pts[i-1],p1=pts[i],p2=pts[i+1],d1=Math.hypot(p1.x-p0.x,p1.y-p0.y)||1,d2=Math.hypot(p2.x-p1.x,p2.y-p1.y)||1,r=Math.min(d1,d2)*0.5*s,a={x:p1.x+(p0.x-p1.x)/d1*r,y:p1.y+(p0.y-p1.y)/d1*r},b={x:p1.x+(p2.x-p1.x)/d2*r,y:p1.y+(p2.y-p1.y)/d2*r};ctx.lineTo(a.x,a.y);ctx.quadraticCurveTo(p1.x,p1.y,b.x,b.y);}ctx.lineTo(pts[pts.length-1].x,pts[pts.length-1].y);}
+// Circular arc-fillet corner rounding (constant radius)
+function arcPath(ctx,pts,s){if(pts.length<3||s<=0){ctx.moveTo(pts[0].x,pts[0].y);for(var i=1;i<pts.length;i++)ctx.lineTo(pts[i].x,pts[i].y);return;}ctx.moveTo(pts[0].x,pts[0].y);for(var i=1;i<pts.length-1;i++){var p0=pts[i-1],p1=pts[i],p2=pts[i+1],d1=Math.hypot(p1.x-p0.x,p1.y-p0.y)||1,d2=Math.hypot(p2.x-p1.x,p2.y-p1.y)||1,r=Math.min(d1,d2)*0.5*s;ctx.arcTo(p1.x,p1.y,p2.x,p2.y,r);}ctx.lineTo(pts[pts.length-1].x,pts[pts.length-1].y);}
+
+function silhouette(ctx,chains,sm,pathfn){ctx.save();ctx.translate(MARGIN,MARGIN);ctx.fillStyle='#fff';ctx.fillRect(0,0,N*CELL,N*CELL);ctx.strokeStyle='#16161a';ctx.lineWidth=PASSAGE;ctx.lineCap='round';ctx.lineJoin='round';for(var i=0;i<chains.length;i++){var pts=chains[i].map(function(c){return{x:c.cx,y:c.cy};});ctx.beginPath();pathfn(ctx,pts,sm);ctx.stroke();}
+  // centerlines on top
+  ctx.strokeStyle='rgba(255,255,255,0.55)';ctx.lineWidth=1;for(var i=0;i<chains.length;i++){var pts=chains[i].map(function(c){return{x:c.cx,y:c.cy};});ctx.beginPath();pathfn(ctx,pts,sm);ctx.stroke();}
+  ctx.restore();}
+
+var SEED=5;
+var sm=document.getElementById('sm'), smOut=document.getElementById('smOut');
+var bez=document.getElementById('bez'), arc=document.getElementById('arc'), zoom=document.getElementById('zoom');
+[bez,arc].forEach(function(c){c.width=N*CELL+2*MARGIN;c.height=N*CELL+2*MARGIN;});
+zoom.width=zoom.height=N*CELL+2*MARGIN;
+
+function drawZoom(s){
+  var ctx=zoom.getContext('2d');ctx.clearRect(0,0,zoom.width,zoom.height);ctx.fillStyle='#fff';ctx.fillRect(0,0,zoom.width,zoom.height);
+  // one big 90-degree corner: from (cx,top) -> (cx,cy) -> (right,cy)
+  var U=zoom.width*0.62; var ox=zoom.width*0.22, oy=zoom.height*0.30;
+  var p0={x:ox,y:oy}, p1={x:ox,y:oy+U}, p2={x:ox+U,y:oy+U};
+  var r=U*0.5*s;
+  // tangent points
+  var a={x:ox,y:oy+U-r}, b={x:ox+r,y:oy+U};
+  // ideal circle (the arc's circle): center
+  var cc={x:ox+r,y:oy+U-r};
+  ctx.lineWidth=2;ctx.lineCap='round';ctx.lineJoin='round';
+  // guide edges (faint)
+  ctx.strokeStyle='#ccc';ctx.beginPath();ctx.moveTo(p0.x,p0.y);ctx.lineTo(p1.x,p1.y);ctx.lineTo(p2.x,p2.y);ctx.stroke();
+  // ideal circle
+  if(r>1){ctx.strokeStyle='#bbb';ctx.setLineDash([3,4]);ctx.beginPath();ctx.arc(cc.x,cc.y,r,0,7);ctx.stroke();ctx.setLineDash([]);}
+  // bezier curve
+  ctx.strokeStyle='#E08A2B';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(p0.x,p0.y);ctx.lineTo(a.x,a.y);ctx.quadraticCurveTo(p1.x,p1.y,b.x,b.y);ctx.lineTo(p2.x,p2.y);ctx.stroke();
+  // arc curve
+  ctx.strokeStyle='#3FB6C9';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(p0.x,p0.y);ctx.arcTo(p1.x,p1.y,p2.x,p2.y,r);ctx.lineTo(p2.x,p2.y);ctx.stroke();
+  // corner dot
+  ctx.fillStyle='#999';ctx.beginPath();ctx.arc(p1.x,p1.y,3,0,7);ctx.fill();
+}
+function render(){
+  build(SEED,0.5);var chains=buildChains(),s=+sm.value;smOut.textContent=Math.round(s*100)+'%';
+  silhouette(bez.getContext('2d'),chains,s,bezPath);
+  silhouette(arc.getContext('2d'),chains,s,arcPath);
+  drawZoom(s);
+}
+sm.oninput=render;
+document.getElementById('regen').onclick=function(){SEED=(Math.random()*1e9)|0;render();};
+render();
+</script>
+</body></html>

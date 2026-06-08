@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Curvy Island POC — square → squircle → circle</title>
+<style>
+  :root{ --wall:#c9c8c0; --pass:#17171a; --ink:#e9e8e2; --mut:#8a8980; --accent:#5DCAA5; }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       background:#0e0e0d;color:var(--ink);padding:22px 26px 60px}
+  h1{font-size:17px;margin:0 0 2px;letter-spacing:.2px}
+  .sub{color:var(--mut);font-size:12.5px;margin:0 0 18px;max-width:980px}
+  .controls{display:flex;gap:26px;align-items:center;flex-wrap:wrap;
+            background:#1a1a18;border:1px solid #2a2a27;border-radius:12px;padding:14px 18px;margin-bottom:20px}
+  .ctl{display:flex;flex-direction:column;gap:4px;min-width:180px}
+  .ctl label{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut)}
+  .ctl .val{color:var(--accent);font-variant-numeric:tabular-nums}
+  input[type=range]{width:230px;accent-color:var(--accent)}
+  button{background:#2a2a27;color:var(--ink);border:1px solid #3a3a36;border-radius:8px;
+         padding:8px 14px;cursor:pointer;font-size:13px}
+  button:hover{background:#34342f}
+  .chk{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--mut);cursor:pointer}
+  .panels{display:flex;gap:22px;flex-wrap:wrap}
+  .panel{display:flex;flex-direction:column;gap:8px}
+  .panel h2{font-size:12.5px;margin:0;font-weight:600;letter-spacing:.3px}
+  .panel .tag{font-size:11px;color:var(--mut);font-weight:400}
+  .panel.fix h2{color:var(--accent)}
+  canvas{background:var(--pass);border-radius:10px;border:1px solid #2a2a27;display:block}
+  .legend{display:flex;gap:18px;margin-top:14px;color:var(--mut);font-size:12px;flex-wrap:wrap}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .sw{width:13px;height:13px;border-radius:3px;display:inline-block}
+  code{background:#1f1f1d;padding:1px 5px;border-radius:4px;color:#cfcfc7}
+</style>
+</head>
+<body>
+  <h1>Curvy maze — island rendering prototype</h1>
+  <p class="sub">
+    Same maze rendered three ways. Drag <b>Smoothing</b> (Round → Organic) and watch the little
+    wall-pillar islands inside loops. <b>Current</b> reproduces today's bug — they erode into
+    commas/teardrops and vanish. <b>Proposed</b> paints each island explicitly as a wall-colored
+    rounded shape on top of the channels, so it morphs cleanly <b>square → squircle → circle</b> and
+    never collapses. This is a render-only change; the maze data is identical in all three.
+  </p>
+
+  <div class="controls">
+    <div class="ctl">
+      <label>Smoothing <span class="val" id="smOut">100%</span></label>
+      <input id="sm" type="range" min="0" max="1" step="0.01" value="1">
+    </div>
+    <div class="ctl">
+      <label>Wall density <span class="val" id="dOut">62%</span></label>
+      <input id="dens" type="range" min="0.35" max="0.78" step="0.01" value="0.62">
+    </div>
+    <button id="regen">↻ New maze</button>
+    <label class="chk"><input type="checkbox" id="mark"> mark detected islands</label>
+    <span class="ctl" style="min-width:auto"><span class="val" id="info"></span></span>
+  </div>
+
+  <div class="panels">
+    <div class="panel"><h2>Square <span class="tag">reference</span></h2><canvas id="sq"></canvas></div>
+    <div class="panel"><h2>Curvy — Current <span class="tag">today (bug)</span></h2><canvas id="cur"></canvas></div>
+    <div class="panel fix"><h2>Curvy — Proposed <span class="tag">explicit island pass</span></h2><canvas id="fix"></canvas></div>
+  </div>
+
+  <div class="legend">
+    <span><span class="sw" style="background:var(--wall)"></span>wall / material (plate)</span>
+    <span><span class="sw" style="background:var(--pass);border:1px solid #333"></span>passage (carved channel)</span>
+    <span>island half-width <code>= wall/2 = 0.15·cell</code> · radius <code>= smoothing × half-width</code></span>
+  </div>
+
+<script>
+// ---- model (faithful to index.html curvy renderer) -------------------------
+var N = 9, CELL = 40, WALLFRAC = 0.30, MARGIN = 16;
+var PASSAGE = CELL * (1 - WALLFRAC);          // 28
+var HALF    = (CELL - PASSAGE) / 2;           // 6  (= wall/2 = island half-width)
+var WALL = getComputedStyle(document.documentElement).getPropertyValue('--wall').trim();
+var PASS = getComputedStyle(document.documentElement).getPropertyValue('--pass').trim();
+var MARK = '#5DCAA5';
+var cells = [], cmap = {};
+function key(c,r){return c+','+r;}
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+
+function build(seed, density){
+  cells=[];cmap={};
+  for(var r=0;r<N;r++)for(var c=0;c<N;c++){
+    var cell={col:c,row:r,cx:c*CELL+CELL/2,cy:r*CELL+CELL/2,inside:true,id:key(c,r),
+              walls:{N:true,S:true,E:true,W:true}};
+    cells.push(cell);cmap[cell.id]=cell;
+  }
+  var rnd=mulberry32(seed);
+  for(var i=0;i<cells.length;i++){
+    var cell=cells[i];
+    var rt=cmap[key(cell.col+1,cell.row)], dn=cmap[key(cell.col,cell.row+1)];
+    if(rt && rnd()<density){cell.walls.E=false;rt.walls.W=false;}
+    if(dn && rnd()<density){cell.walls.S=false;dn.walls.N=false;}
+  }
+}
+
+function deg(c){var d=0;if(!c.walls.N)d++;if(!c.walls.S)d++;if(!c.walls.E)d++;if(!c.walls.W)d++;return d;}
+
+// ---- buildChains (ported verbatim in spirit from index.html) ---------------
+function buildChains(){
+  var DV={N:[0,-1],S:[0,1],W:[-1,0],E:[1,0]};
+  function nbf(c,k){return cmap[key(c.col+DV[k][0],c.row+DV[k][1])];}
+  function ek(a,b){return a.id<b.id?a.id+'|'+b.id:b.id+'|'+a.id;}
+  var used={},out=[];
+  for(var i=0;i<cells.length;i++){
+    var cell=cells[i];
+    if(!cell.inside||deg(cell)===2)continue;
+    ['N','S','E','W'].forEach(function(k){
+      if(cell.walls[k])return;
+      var nx=nbf(cell,k);
+      if(!nx||!nx.inside||used[ek(cell,nx)])return;
+      var chain=[cell],prev=cell,cu=nx;
+      while(true){
+        used[ek(prev,cu)]=1;chain.push(cu);
+        if(deg(cu)!==2)break;
+        var nextc=null;
+        ['N','S','E','W'].forEach(function(kk){
+          if(cu.walls[kk])return;var nn=nbf(cu,kk);
+          if(!nn||!nn.inside||nn===prev)return;nextc=nn;});
+        if(!nextc)break;prev=cu;cu=nextc;
+      }
+      out.push(chain);
+    });
+  }
+  return out;
+}
+
+// ---- smoothing (ported from smoothCanvasPath) ------------------------------
+function smoothPath(ctx,pts,s){
+  if(pts.length<3||s<=0){ctx.moveTo(pts[0].x,pts[0].y);for(var i=1;i<pts.length;i++)ctx.lineTo(pts[i].x,pts[i].y);return;}
+  ctx.moveTo(pts[0].x,pts[0].y);
+  for(var i=1;i<pts.length-1;i++){
+    var p0=pts[i-1],p1=pts[i],p2=pts[i+1];
+    var d1=Math.hypot(p1.x-p0.x,p1.y-p0.y)||1,d2=Math.hypot(p2.x-p1.x,p2.y-p1.y)||1;
+    var r=Math.min(d1,d2)*0.5*s;
+    var a={x:p1.x+(p0.x-p1.x)/d1*r,y:p1.y+(p0.y-p1.y)/d1*r},
+        b={x:p1.x+(p2.x-p1.x)/d2*r,y:p1.y+(p2.y-p1.y)/d2*r};
+    ctx.lineTo(a.x,a.y);ctx.quadraticCurveTo(p1.x,p1.y,b.x,b.y);
+  }
+  ctx.lineTo(pts[pts.length-1].x,pts[pts.length-1].y);
+}
+
+// ---- fillets (ported from drawCurvyFillets) --------------------------------
+function curvyFilletR(){return Math.min(PASSAGE*0.5,(CELL-PASSAGE)*0.85);}
+function drawFillets(ctx,sm){
+  var r=curvyFilletR()*sm;if(r<=0.15)return;
+  var D={N:{x:0,y:-1},S:{x:0,y:1},E:{x:1,y:0},W:{x:-1,y:0}},pairs=[['N','E'],['N','W'],['S','E'],['S','W']];
+  ctx.fillStyle=PASS;
+  for(var i=0;i<cells.length;i++){
+    var cell=cells[i];if(!cell.inside)continue;if(deg(cell)<3)continue;
+    for(var pj=0;pj<4;pj++){
+      var d1=D[pairs[pj][0]],d2=D[pairs[pj][1]];
+      if(cell.walls[pairs[pj][0]]||cell.walls[pairs[pj][1]])continue;
+      var hp=PASSAGE/2,Px=cell.cx+(d1.x+d2.x)*hp,Py=cell.cy+(d1.y+d2.y)*hp,
+          A1x=Px+d2.x*r,A1y=Py+d2.y*r,A2x=Px+d1.x*r,A2y=Py+d1.y*r,
+          Cx=Px+(d1.x+d2.x)*r,Cy=Py+(d1.y+d2.y)*r;
+      var a1=Math.atan2(A1y-Cy,A1x-Cx),a2=Math.atan2(A2y-Cy,A2x-Cx),dlt=a2-a1;
+      while(dlt<=-Math.PI)dlt+=2*Math.PI;while(dlt>Math.PI)dlt-=2*Math.PI;
+      ctx.beginPath();ctx.moveTo(Px,Py);ctx.lineTo(A1x,A1y);ctx.arc(Cx,Cy,r,a1,a2,dlt<0);ctx.lineTo(Px,Py);ctx.closePath();ctx.fill();
+    }
+  }
+}
+
+// ---- island detection: connected wall-blobs disconnected from the boundary frame ----
+// Wall lattice: vertices v(i,j) for i,j in 0..N at world (i*CELL, j*CELL). A lattice edge
+// between adjacent vertices is "wall" when the cell-boundary it lies on is closed. The
+// component that touches the frame is the main wall structure; EVERY other component is an
+// island — a point (2x2 pillar), a bar (longer rectangle), or an L/T blob.
+function islandComponents(){
+  function wallH(i,j){ if(j<=0||j>=N) return true; var cl=cmap[key(i,j)]; return cl?cl.walls.N:true; } // horiz edge v(i,j)-v(i+1,j)
+  function wallV(i,j){ if(i<=0||i>=N) return true; var cl=cmap[key(i,j)]; return cl?cl.walls.W:true; } // vert  edge v(i,j)-v(i,j+1)
+  function nbrs(i,j){var a=[];
+    if(i<N&&wallH(i,j))a.push([i+1,j]); if(i>0&&wallH(i-1,j))a.push([i-1,j]);
+    if(j<N&&wallV(i,j))a.push([i,j+1]); if(j>0&&wallV(i,j-1))a.push([i,j-1]); return a;}
+  var vid=function(i,j){return i+'_'+j;}, comp={};
+  // flood the main structure from the frame ring
+  var st=[];
+  for(var i=0;i<=N;i++){st.push([i,0]);st.push([i,N]);}
+  for(var j=0;j<=N;j++){st.push([0,j]);st.push([N,j]);}
+  while(st.length){var p=st.pop(),id=vid(p[0],p[1]); if(comp[id]!==undefined)continue; comp[id]=-1;
+    var ns=nbrs(p[0],p[1]); for(var k=0;k<ns.length;k++)if(comp[vid(ns[k][0],ns[k][1])]===undefined)st.push(ns[k]);}
+  // every leftover interior vertex belongs to an island component
+  var out=[],cid=0;
+  for(var ii=1;ii<N;ii++)for(var jj=1;jj<N;jj++){
+    if(comp[vid(ii,jj)]!==undefined)continue;
+    var q=[[ii,jj]],verts=[],edges=[]; comp[vid(ii,jj)]=cid;
+    while(q.length){var p=q.pop(); verts.push(p);
+      var cand=[];
+      if(p[0]<N&&wallH(p[0],p[1]))cand.push([p[0]+1,p[1]]);
+      if(p[0]>0&&wallH(p[0]-1,p[1]))cand.push([p[0]-1,p[1]]);
+      if(p[1]<N&&wallV(p[0],p[1]))cand.push([p[0],p[1]+1]);
+      if(p[1]>0&&wallV(p[0],p[1]-1))cand.push([p[0],p[1]-1]);
+      for(var c=0;c<cand.length;c++){var nb=cand[c]; edges.push([p,nb]);
+        if(comp[vid(nb[0],nb[1])]===undefined){comp[vid(nb[0],nb[1])]=cid;q.push(nb);}}
+    }
+    out.push({verts:verts,edges:edges}); cid++;
+  }
+  return out;
+}
+// wall-finger dead-ends: interior lattice vertices with exactly ONE incident wall edge.
+// These are attached to the main structure (not islands), but their free tip pinches into a
+// teardrop — round it with the same cap mechanism.
+function wallTips(){
+  function wallH(i,j){ if(j<=0||j>=N) return true; var cl=cmap[key(i,j)]; return cl?cl.walls.N:true; }
+  function wallV(i,j){ if(i<=0||i>=N) return true; var cl=cmap[key(i,j)]; return cl?cl.walls.W:true; }
+  var out=[];
+  for(var i=1;i<N;i++)for(var j=1;j<N;j++){
+    var e=[];
+    if(wallH(i,j))e.push([i+1,j]); if(wallH(i-1,j))e.push([i-1,j]);
+    if(wallV(i,j))e.push([i,j+1]); if(wallV(i,j-1))e.push([i,j-1]);
+    if(e.length===1) out.push({verts:[[i,j]], edges:[[[i,j],e[0]]]});
+  }
+  return out;
+}
+// erase blocky footprint to passage, then redraw rounded (radius r): rect->stadium, square->circle.
+function drawIslands(ctx, comps, r){
+  for(var pass=0;pass<2;pass++){
+    ctx.fillStyle = pass ? WALL : PASS;
+    var rad = pass ? r : 0;
+    for(var ci=0;ci<comps.length;ci++){var cp=comps[ci];
+      for(var ei=0;ei<cp.edges.length;ei++){               // edges: plain bars, width = wall
+        var a=cp.edges[ei][0],b=cp.edges[ei][1],
+            ax=a[0]*CELL,ay=a[1]*CELL,bx=b[0]*CELL,by=b[1]*CELL;
+        if(ax===bx) ctx.fillRect(ax-HALF, Math.min(ay,by), 2*HALF, Math.abs(by-ay));
+        else        ctx.fillRect(Math.min(ax,bx), ay-HALF, Math.abs(bx-ax), 2*HALF);
+      }
+      for(var vi=0;vi<cp.verts.length;vi++){               // vertices: rounded squares (round the caps/corners)
+        var vx=cp.verts[vi][0]*CELL, vy=cp.verts[vi][1]*CELL;
+        rr(ctx, vx-HALF, vy-HALF, 2*HALF, 2*HALF, rad); ctx.fill();
+      }
+    }
+  }
+}
+
+function rr(ctx,x,y,w,h,r){
+  r=Math.min(r,w/2,h/2);
+  ctx.beginPath();ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();
+}
+
+// ---- renderers -------------------------------------------------------------
+function plate(ctx){ctx.fillStyle=WALL;ctx.fillRect(0,0,N*CELL,N*CELL);}
+
+function renderSquare(ctx,chains){
+  ctx.save();ctx.translate(MARGIN,MARGIN);plate(ctx);
+  ctx.strokeStyle=PASS;ctx.lineWidth=PASSAGE;ctx.lineCap='butt';ctx.lineJoin='miter';
+  for(var i=0;i<chains.length;i++){var pts=chains[i].map(function(c){return{x:c.cx,y:c.cy};});
+    ctx.beginPath();for(var j=0;j<pts.length;j++)j?ctx.lineTo(pts[j].x,pts[j].y):ctx.moveTo(pts[j].x,pts[j].y);ctx.stroke();}
+  ctx.restore();
+}
+
+function renderCurvy(ctx,chains,sm,withIslands,marks){
+  ctx.save();ctx.translate(MARGIN,MARGIN);plate(ctx);
+  ctx.strokeStyle=PASS;ctx.lineWidth=PASSAGE;ctx.lineCap='round';ctx.lineJoin='round';
+  for(var i=0;i<chains.length;i++){var pts=chains[i].map(function(c){return{x:c.cx,y:c.cy};});
+    ctx.beginPath();smoothPath(ctx,pts,sm);ctx.stroke();}
+  drawFillets(ctx,sm);
+  if(withIslands||marks){
+    var comps=islandComponents();
+    if(withIslands){
+      drawIslands(ctx, comps, sm*HALF);          // disconnected blobs: points/bars/L/T (erase+redraw)
+      // wall-finger tips: ADDITIVE rounded cap only — never redraw the edge (that fights the
+      // curved corridors and leaves seams). Square at sm0 (no-op over plate) -> circle at sm1.
+      var tips=wallTips(), tr=sm*HALF; ctx.fillStyle=WALL;
+      for(var ti=0;ti<tips.length;ti++){var tv=tips[ti].verts[0];
+        rr(ctx, tv[0]*CELL-HALF, tv[1]*CELL-HALF, 2*HALF, 2*HALF, tr); ctx.fill();}
+    }
+    if(marks){
+      ctx.strokeStyle=MARK;ctx.lineWidth=1.5;
+      for(var cm=0;cm<comps.length;cm++){var vs=comps[cm].verts;
+        for(var vm=0;vm<vs.length;vm++){ctx.beginPath();ctx.arc(vs[vm][0]*CELL,vs[vm][1]*CELL,HALF+5,0,7);ctx.stroke();}}
+    }
+  }
+  ctx.restore();
+}
+
+// ---- driver ----------------------------------------------------------------
+var SEED=12345;
+var sm=document.getElementById('sm'), dens=document.getElementById('dens'),
+    smOut=document.getElementById('smOut'), dOut=document.getElementById('dOut'),
+    info=document.getElementById('info'), mark=document.getElementById('mark');
+var csq=document.getElementById('sq'), ccur=document.getElementById('cur'), cfix=document.getElementById('fix');
+[csq,ccur,cfix].forEach(function(cv){cv.width=N*CELL+2*MARGIN;cv.height=N*CELL+2*MARGIN;});
+
+function render(){
+  build(SEED, +dens.value);
+  var chains=buildChains();
+  var s=+sm.value, isl=islandComponents();
+  smOut.textContent=Math.round(s*100)+'%';
+  dOut.textContent=Math.round(+dens.value*100)+'%';
+  info.textContent=isl.length+' islands · '+chains.length+' chains';
+  renderSquare(csq.getContext('2d'),chains);
+  renderCurvy(ccur.getContext('2d'),chains,s,false,mark.checked);
+  renderCurvy(cfix.getContext('2d'),chains,s,true,mark.checked);
+}
+sm.oninput=dens.oninput=mark.onchange=render;
+document.getElementById('regen').onclick=function(){SEED=(Math.random()*1e9)|0;render();};
+render();
+</script>
+</body>
+</html>

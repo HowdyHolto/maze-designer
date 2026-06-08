@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Export Kit — visual examples</title>
+<style>
+  :root{--ink:#e9e8e2;--mut:#8a8980;--accent:#5DCAA5}
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0e0e0d;color:var(--ink);padding:22px 26px 70px}
+  h1{font-size:17px;margin:0 0 2px}
+  .sub{color:var(--mut);font-size:12.5px;margin:0 0 16px;max-width:1000px}
+  .controls{display:flex;gap:24px;align-items:center;flex-wrap:wrap;background:#1a1a18;border:1px solid #2a2a27;border-radius:12px;padding:12px 16px;margin-bottom:18px}
+  .controls label{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut)}
+  input[type=range]{width:200px;accent-color:var(--accent);vertical-align:middle}
+  button{background:#2a2a27;color:var(--ink);border:1px solid #3a3a36;border-radius:8px;padding:8px 14px;cursor:pointer}
+  button:hover{background:#34342f}
+  .val{color:var(--accent)}
+  .row{display:flex;gap:20px;flex-wrap:wrap;margin-bottom:22px}
+  .panel{display:flex;flex-direction:column;gap:6px}
+  .panel h2{font-size:12.5px;margin:0;font-weight:600}
+  .panel .tag{font-size:11px;color:var(--mut);font-weight:400}
+  canvas{border-radius:10px;border:1px solid #2a2a27;display:block}
+  .sectlabel{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--accent);margin:6px 0 10px;border-top:1px solid #2a2a27;padding-top:14px}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--mut)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:12px;height:12px;border-radius:3px;display:inline-block;border:1px solid #0006}
+</style></head>
+<body>
+  <h1>Export Kit — what each piece looks like</h1>
+  <p class="sub">Same maze, shown the three ways the export would give it to you. <b>Raw</b> = editable kit-of-parts (grab a category and edit). <b>Polished · grooves</b> and <b>Polished · walls</b> = the two clean, Pathfinder-ready cut layers (you pick whichever your machine wants). Bottom row = the one decision: <b>round-clean</b> vs <b>organic</b> polished geometry.</p>
+
+  <div class="controls">
+    <label>Organic smoothing <span class="val" id="smOut">100%</span><br><input id="sm" type="range" min="0" max="1" step="0.05" value="1"></label>
+    <button id="regen">↻ New maze</button>
+  </div>
+
+  <div class="sectlabel">1 · maze-raw.svg — editable "kit of parts"</div>
+  <div class="row">
+    <div class="panel"><h2>Raw — kit of parts <span class="tag">named, editable layers</span></h2><canvas id="raw"></canvas>
+      <div class="legend">
+        <span><span class="sw" style="background:#0F6E56"></span>boundary</span>
+        <span><span class="sw" style="background:#3B6FE0"></span>channels (centerlines)</span>
+        <span><span class="sw" style="background:#7F4ACB"></span>islands</span>
+        <span><span class="sw" style="background:#E08A2B"></span>doors</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="sectlabel">2 · maze-polished.svg — two clean cut layers (pick one), one Pathfinder ▸ Unite</div>
+  <div class="row">
+    <div class="panel"><h2>Polished · cut-grooves <span class="tag">cut/engrave these (passages)</span></h2><canvas id="grooves"></canvas></div>
+    <div class="panel"><h2>Polished · cut-walls <span class="tag">the material that stays</span></h2><canvas id="walls"></canvas></div>
+  </div>
+
+  <div class="sectlabel">3 · the decision — polished geometry style</div>
+  <div class="row">
+    <div class="panel"><h2>Round-clean <span class="tag">recommended · squeeze-free · 1 Unite</span></h2><canvas id="pround"></canvas></div>
+    <div class="panel"><h2>Organic <span class="tag">matches preview · needs Outline-Stroke first</span></h2><canvas id="porg"></canvas></div>
+  </div>
+
+<script>
+var N=7, CELL=42, WALLFRAC=0.30, MARGIN=18;
+var PASSAGE=CELL*(1-WALLFRAC), HALF=(CELL-PASSAGE)/2;
+var cells=[], cmap={};
+function key(c,r){return c+','+r;}
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+function build(seed,density){cells=[];cmap={};for(var r=0;r<N;r++)for(var c=0;c<N;c++){var cell={col:c,row:r,cx:c*CELL+CELL/2,cy:r*CELL+CELL/2,inside:true,id:key(c,r),walls:{N:true,S:true,E:true,W:true}};cells.push(cell);cmap[cell.id]=cell;}var rnd=mulberry32(seed);for(var i=0;i<cells.length;i++){var cell=cells[i],rt=cmap[key(cell.col+1,cell.row)],dn=cmap[key(cell.col,cell.row+1)];if(rt&&rnd()<density){cell.walls.E=false;rt.walls.W=false;}if(dn&&rnd()<density){cell.walls.S=false;dn.walls.N=false;}}}
+function deg(c){var d=0;if(!c.walls.N)d++;if(!c.walls.S)d++;if(!c.walls.E)d++;if(!c.walls.W)d++;return d;}
+function buildChains(){var DV={N:[0,-1],S:[0,1],W:[-1,0],E:[1,0]};function nbf(c,k){return cmap[key(c.col+DV[k][0],c.row+DV[k][1])];}function ek(a,b){return a.id<b.id?a.id+'|'+b.id:b.id+'|'+a.id;}var used={},out=[];for(var i=0;i<cells.length;i++){var cell=cells[i];if(deg(cell)===2)continue;['N','S','E','W'].forEach(function(k){if(cell.walls[k])return;var nx=nbf(cell,k);if(!nx||used[ek(cell,nx)])return;var chain=[cell],prev=cell,cu=nx;while(true){used[ek(prev,cu)]=1;chain.push(cu);if(deg(cu)!==2)break;var nc=null;['N','S','E','W'].forEach(function(kk){if(cu.walls[kk])return;var nn=nbf(cu,kk);if(!nn||nn===prev)return;nc=nn;});if(!nc)break;prev=cu;cu=nc;}out.push(chain);});}return out;}
+function smoothPath(ctx,pts,s){if(pts.length<3||s<=0){ctx.moveTo(pts[0].x,pts[0].y);for(var i=1;i<pts.length;i++)ctx.lineTo(pts[i].x,pts[i].y);return;}ctx.moveTo(pts[0].x,pts[0].y);for(var i=1;i<pts.length-1;i++){var p0=pts[i-1],p1=pts[i],p2=pts[i+1],d1=Math.hypot(p1.x-p0.x,p1.y-p0.y)||1,d2=Math.hypot(p2.x-p1.x,p2.y-p1.y)||1,r=Math.min(d1,d2)*0.5*s,a={x:p1.x+(p0.x-p1.x)/d1*r,y:p1.y+(p0.y-p1.y)/d1*r},b={x:p1.x+(p2.x-p1.x)/d2*r,y:p1.y+(p2.y-p1.y)/d2*r};ctx.lineTo(a.x,a.y);ctx.quadraticCurveTo(p1.x,p1.y,b.x,b.y);}ctx.lineTo(pts[pts.length-1].x,pts[pts.length-1].y);}
+function islandComponents(){function wallH(i,j){if(j<=0||j>=N)return true;var cl=cmap[key(i,j)];return cl?cl.walls.N:true;}function wallV(i,j){if(i<=0||i>=N)return true;var cl=cmap[key(i,j)];return cl?cl.walls.W:true;}function nbrs(i,j){var a=[];if(i<N&&wallH(i,j))a.push([i+1,j]);if(i>0&&wallH(i-1,j))a.push([i-1,j]);if(j<N&&wallV(i,j))a.push([i,j+1]);if(j>0&&wallV(i,j-1))a.push([i,j-1]);return a;}var vid=function(i,j){return i+'_'+j;},comp={},st=[];for(var i=0;i<=N;i++){st.push([i,0]);st.push([i,N]);}for(var j=0;j<=N;j++){st.push([0,j]);st.push([N,j]);}while(st.length){var p=st.pop(),id=vid(p[0],p[1]);if(comp[id]!==undefined)continue;comp[id]=-1;var ns=nbrs(p[0],p[1]);for(var k=0;k<ns.length;k++)if(comp[vid(ns[k][0],ns[k][1])]===undefined)st.push(ns[k]);}var out=[];for(var i=1;i<N;i++)for(var j=1;j<N;j++){if(comp[vid(i,j)]!==undefined)continue;var q=[[i,j]],verts=[],edges=[];comp[vid(i,j)]=out.length;while(q.length){var p=q.pop();verts.push(p);var cand=[];if(i<N&&wallH(p[0],p[1]))cand.push([p[0]+1,p[1]]);if(wallH(p[0]-1,p[1]))cand.push([p[0]-1,p[1]]);if(wallV(p[0],p[1]))cand.push([p[0],p[1]+1]);if(wallV(p[0],p[1]-1))cand.push([p[0],p[1]-1]);for(var k=0;k<cand.length;k++){var nb=cand[k];edges.push([p,nb]);if(comp[vid(nb[0],nb[1])]===undefined){comp[vid(nb[0],nb[1])]=out.length;q.push(nb);}}}out.push({verts:verts,edges:edges});}return out;}
+function wallTips(){function wallH(i,j){if(j<=0||j>=N)return true;var cl=cmap[key(i,j)];return cl?cl.walls.N:true;}function wallV(i,j){if(i<=0||i>=N)return true;var cl=cmap[key(i,j)];return cl?cl.walls.W:true;}var out=[];for(var i=1;i<N;i++)for(var j=1;j<N;j++){var e=0;if(wallH(i,j))e++;if(wallH(i-1,j))e++;if(wallV(i,j))e++;if(wallV(i,j-1))e++;if(e===1)out.push([i,j]);}return out;}
+function rr(ctx,x,y,w,h,r){r=Math.min(r,w/2,h/2);ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+function drawIslands(ctx,comps,r,wallColor,passColor){for(var pass=0;pass<2;pass++){ctx.fillStyle=pass?wallColor:passColor;var rad=pass?r:0;for(var ci=0;ci<comps.length;ci++){var cp=comps[ci];for(var ei=0;ei<cp.edges.length;ei++){var a=cp.edges[ei][0],b=cp.edges[ei][1],ax=a[0]*CELL,ay=a[1]*CELL,bx=b[0]*CELL,by=b[1]*CELL;if(ax===bx)ctx.fillRect(ax-HALF,Math.min(ay,by),2*HALF,Math.abs(by-ay));else ctx.fillRect(Math.min(ax,bx),ay-HALF,Math.abs(bx-ax),2*HALF);}for(var vi=0;vi<cp.verts.length;vi++){var vx=cp.verts[vi][0]*CELL,vy=cp.verts[vi][1]*CELL;rr(ctx,vx-HALF,vy-HALF,2*HALF,2*HALF,rad);ctx.fill();}}}}
+function drawTips(ctx,r,wallColor){var tips=wallTips();ctx.fillStyle=wallColor;for(var i=0;i<tips.length;i++){rr(ctx,tips[i][0]*CELL-HALF,tips[i][1]*CELL-HALF,2*HALF,2*HALF,r);ctx.fill();}}
+
+// passage silhouette: wallColor board, passColor channels carved, clean islands in wallColor
+function silhouette(ctx,chains,comps,sm,passColor,wallColor,organic){
+  ctx.save();ctx.translate(MARGIN,MARGIN);
+  ctx.fillStyle=wallColor;ctx.fillRect(0,0,N*CELL,N*CELL);
+  ctx.strokeStyle=passColor;ctx.lineWidth=PASSAGE;ctx.lineCap='round';ctx.lineJoin='round';
+  for(var i=0;i<chains.length;i++){var pts=chains[i].map(function(c){return{x:c.cx,y:c.cy};});ctx.beginPath();smoothPath(ctx,pts,organic?sm:0);ctx.stroke();}
+  drawIslands(ctx,comps,organic?sm*HALF:HALF,wallColor,passColor); // round-clean uses full radius -> circle islands
+  drawTips(ctx,organic?sm*HALF:HALF,wallColor);
+  ctx.restore();
+}
+function drawRaw(ctx,chains,comps,sm){
+  ctx.save();ctx.translate(MARGIN,MARGIN);
+  ctx.fillStyle='#fbfbf8';ctx.fillRect(0,0,N*CELL,N*CELL);
+  // faint passage corridors
+  ctx.strokeStyle='#dfe8fb';ctx.lineWidth=PASSAGE;ctx.lineCap='round';ctx.lineJoin='round';
+  for(var i=0;i<chains.length;i++){var pts=chains[i].map(function(c){return{x:c.cx,y:c.cy};});ctx.beginPath();smoothPath(ctx,pts,sm);ctx.stroke();}
+  // channel centerlines (editable paths)
+  ctx.strokeStyle='#3B6FE0';ctx.lineWidth=1.6;
+  for(var i=0;i<chains.length;i++){var pts=chains[i].map(function(c){return{x:c.cx,y:c.cy};});ctx.beginPath();smoothPath(ctx,pts,sm);ctx.stroke();}
+  // islands as purple clean shapes
+  drawIslands(ctx,comps,sm*HALF,'#7F4ACB','#fbfbf8');
+  drawTips(ctx,sm*HALF,'#fbfbf8');
+  // doors: two orange circles on perimeter
+  ctx.fillStyle='#E08A2B';
+  [[3,0],[3,N]].forEach(function(d){ctx.beginPath();ctx.arc(d[0]*CELL,d[1]*CELL,HALF*1.4,0,7);ctx.fill();});
+  // boundary
+  ctx.strokeStyle='#0F6E56';ctx.lineWidth=2.5;ctx.strokeRect(0,0,N*CELL,N*CELL);
+  ctx.restore();
+}
+
+var SEED=11;
+var sm=document.getElementById('sm'), smOut=document.getElementById('smOut');
+var ids=['raw','grooves','walls','pround','porg'];
+var cv={}; ids.forEach(function(id){cv[id]=document.getElementById(id);cv[id].width=N*CELL+2*MARGIN;cv[id].height=N*CELL+2*MARGIN;});
+function render(){
+  build(SEED,0.55);
+  var chains=buildChains(), comps=islandComponents(), s=+sm.value;
+  smOut.textContent=Math.round(s*100)+'%';
+  drawRaw(cv.raw.getContext('2d'),chains,comps,s);
+  silhouette(cv.grooves.getContext('2d'),chains,comps,s,'#15151a','#ffffff',true);
+  silhouette(cv.walls.getContext('2d'),chains,comps,s,'#ffffff','#15151a',true);
+  silhouette(cv.pround.getContext('2d'),chains,comps,s,'#15151a','#ffffff',false); // round-clean
+  silhouette(cv.porg.getContext('2d'),chains,comps,s,'#15151a','#ffffff',true);    // organic
+}
+sm.oninput=render;
+document.getElementById('regen').onclick=function(){SEED=(Math.random()*1e9)|0;render();};
+render();
+</script>
+</body></html>
