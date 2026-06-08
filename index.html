@@ -345,7 +345,11 @@ function drawCurvyIslands(C){
   var ref=null;for(var i=0;i<S.cells.length;i++){if(S.cells[i].inside){ref=S.cells[i];break;}}if(!ref)return;
   var ox=ref.cx-cs/2-ref.col*cs, oy=ref.cy-cs/2-ref.row*cs;
   function X(i){return ox+i*cs;}function Y(j){return oy+j*cs;}
-  var comps=islandComponents();
+  // Only single-vertex PILLARS (2x2-loop centers) need erase+repaint — they're the cells that erode
+  // into teardrops. Bars/L/T and large braid-fragmented wall blobs render fine as the solid plate, and
+  // their dead-ends are already rounded by the wall-tip caps below; erase+repainting them would leave
+  // seam artifacts at high braid. So filter to isolated single-vertex islands.
+  var comps=islandComponents().filter(function(c){return c.verts.length===1&&c.edges.length===0;});
   // pass 0 erase (bg, square), pass 1 draw (wall, rounded)
   for(var pass=0;pass<2;pass++){
     ctx.fillStyle=pass?C.wall:C.bg;var rad=pass?r:0;
