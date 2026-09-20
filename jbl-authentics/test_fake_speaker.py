@@ -5,14 +5,111 @@
 import contextlib
 import io
 import os
+import socket
+import struct
 import sys
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jbl_authentics as ja           # noqa: E402
 from fake_speaker import FakeSpeaker, XML, status  # noqa: E402
 
 
+def _txt(*items):
+    return b"".join(bytes([len(i)]) + i.encode() for i in items)
+
+
+def _response(records):
+    pkt = struct.pack("!HHHHHH", 0, 0x8400, 0, len(records), 0, 0)
+    for name, rtype, rdata in records:
+        pkt += ja._dns_name(name) + struct.pack("!HHIH", rtype, 0x8001, 120, len(rdata)) + rdata
+    return pkt
+
+
+def test_mdns_parsing():
+    inst, host = "AABB@JBL L16._raop._tcp.local", "JBL-L16.local"
+    pkt = _response([
+        ("_raop._tcp.local", 12, ja._dns_name(inst)),
+        (inst, 33, struct.pack("!HHH", 0, 0, 5000) + ja._dns_name(host)),
+        (inst, 16, _txt("txtvers=1", "am=Authentics L16")),
+        (host, 1, socket.inet_aton("10.0.0.99")),
+    ])
+    recs = ja._parse_mdns(pkt)
+    assert ("_raop._tcp.local", "PTR", inst) in recs
+    assert (inst, "SRV", (host, 5000)) in recs
+    assert (inst, "TXT", ["txtvers=1", "am=Authentics L16"]) in recs
+    assert (host, "A", "10.0.0.99") in recs
+    # name compression: answer name and PTR target both point back into the question
+    q = ja._dns_name("_raop._tcp.local")
+    pkt = struct.pack("!HHHHHH", 0, 0x8400, 1, 1, 0, 0) + q + struct.pack("!HH", 12, 1)
+    rdata = b"\x0aAA@JBL L16" + b"\xc0\x0c"
+    pkt += b"\xc0\x0c" + struct.pack("!HHIH", 12, 1, 120, len(rdata)) + rdata
+    assert ja._parse_mdns(pkt) == [("_raop._tcp.local", "PTR", "AA@JBL L16._raop._tcp.local")]
+    assert ja._parse_mdns(b"garbage") == []
+    print("mDNS parsing OK")
+
+
+class FakeMdns(threading.Thread):
+    """Answers PTR lazily (no extra records) so discover_mdns must ask SRV and A itself."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", 0))
+        self.port = self.sock.getsockname()[1]
+        self.inst, self.host = "AABB@JBL L16._raop._tcp.local", "JBL-L16.local"
+        self.questions = []
+
+    def run(self):
+        while True:
+            data, peer = self.sock.recvfrom(4096)
+            _id, _f, qd, _an, _ns, _ar = struct.unpack("!HHHHHH", data[:12])
+            off, answers = 12, []
+            for _ in range(qd):
+                name, off = ja._read_name(data, off)
+                qtype = struct.unpack("!H", data[off:off + 2])[0]
+                off += 4
+                self.questions.append((name, qtype))
+                if qtype == 12 and name == "_raop._tcp.local":
+                    answers.append((name, 12, ja._dns_name(self.inst)))
+                elif qtype == 33 and name == self.inst:
+                    answers.append((name, 33, struct.pack("!HHH", 0, 0, 5000) + ja._dns_name(self.host)))
+                    answers.append((name, 16, _txt("am=Authentics L16")))
+                elif qtype == 1 and name == self.host:
+                    answers.append((name, 1, socket.inet_aton("10.0.0.99")))
+            if answers:
+                self.sock.sendto(_response(answers), peer)
+
+
+def test_mdns_discovery():
+    responder = FakeMdns(); responder.start()
+    saved = ja.MDNS_GROUP
+    ja.MDNS_GROUP = ("127.0.0.1", responder.port)
+    try:
+        found = ja.discover_mdns(2.5)
+    finally:
+        ja.MDNS_GROUP = saved
+    raop = [d for d in found if d["service"] == "raop"]
+    assert raop, found
+    d = raop[0]
+    assert d["ip"] == "10.0.0.99" and d["friendlyName"] == "JBL L16" and d["host"] == "JBL-L16.local"
+    assert d["port"] == 5000 and d["modelName"] == "Authentics L16" and d["authentics"], d
+    assert ("AABB@JBL L16._raop._tcp.local", 33) in responder.questions and ("JBL-L16.local", 1) in responder.questions
+    # merge with an SSDP hit for the same address
+    saved_ssdp, saved_mdns = ja.discover_ssdp, ja.discover_mdns
+    ja.discover_ssdp = lambda *a, **k: [{"ip": "10.0.0.99", "location": "http://10.0.0.99:8080/description.xml", "authentics": False}]
+    ja.discover_mdns = lambda *a, **k: [d]
+    try:
+        merged = ja.discover(1.0)
+    finally:
+        ja.discover_ssdp, ja.discover_mdns = saved_ssdp, saved_mdns
+    assert len(merged) == 1 and merged[0]["location"].endswith("description.xml") and merged[0]["friendlyName"] == "JBL L16" and merged[0]["authentics"]
+    print("mDNS discovery OK")
+
+
 def main():
+    test_mdns_parsing()
+    test_mdns_discovery()
     fake = FakeSpeaker()
     port = fake.start()
 

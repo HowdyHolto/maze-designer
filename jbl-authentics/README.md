@@ -64,7 +64,7 @@ python3 test_ui.py                 # automated test of the UI backend
 
 Work through section 8 of `PROTOCOL.md`. The most useful first steps:
 
-1. `python3 jbl_authentics.py discover` — confirms SSDP works and shows the UPnP description fields the app relied on.
+1. `python3 jbl_authentics.py discover` — searches with UPnP (what the app did) and with mDNS for AirPlay and Spotify Connect (what every network-connected L16 must answer), and shows the description fields the app relied on.
 2. `python3 jbl_authentics.py --host <ip> status` — confirms the framing and the reply formats.
 3. `python3 jbl_authentics.py --host <ip> -v monitor` while turning the physical knobs — shows whether the speaker pushes status changes.
 4. Power is the one command with conflicting evidence. Try **Power → On** in the UI both with and without the "status-element form" box ticked and note which one the speaker answers.

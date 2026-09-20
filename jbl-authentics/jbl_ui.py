@@ -233,7 +233,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/status":
                 self._send(200, {"ok": True, "result": SESSION.status()})
             elif path == "/api/discover":
-                self._send(200, {"ok": True, "result": ja.discover(3.0)})
+                self._send(200, {"ok": True, "result": ja.discover(6.0)})
             else:
                 self._send(404, {"ok": False, "error": "not found"})
         except NotConnected as exc:
@@ -440,7 +440,7 @@ $('discover').onclick = async () => {
       const o = document.createElement('option'); o.value = d.ip;
       o.textContent = (d.authentics ? '★ ' : '') + d.ip + '  ' + (d.friendlyName || d.modelName || d.server || '');
       sel.appendChild(o);
-      line('found ' + d.ip + '  ' + (d.friendlyName || '') + '  ' + (d.modelDescription || d.modelName || '') + (d.authentics ? '  [Authentics]' : ''));
+      line('found ' + d.ip + '  ' + (d.friendlyName || '') + '  ' + (d.modelDescription || d.modelName || '') + (d.service ? '  via ' + d.service : '') + (d.authentics ? '  [Authentics]' : ''));
     }
     sel.hidden = !devs.length;
     if (devs.length) { const best = devs.find(d => d.authentics) || devs[0]; sel.value = best.ip; $('target').value = best.ip; }

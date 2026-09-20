@@ -28,7 +28,9 @@ import argparse
 import json
 import re
 import socket
+import struct
 import sys
+import threading
 import time
 import urllib.request
 
@@ -42,6 +44,9 @@ MSEARCH = (
     "ST: upnp:rootdevice\r\n"
     "\r\n"
 )
+MDNS_GROUP = ("224.0.0.251", 5353)
+# Services the speaker advertises with mDNS: AirPlay audio (RAOP), AirPlay, Spotify Connect.
+MDNS_SERVICES = ("_raop._tcp.local", "_airplay._tcp.local", "_spotify-connect._tcp.local")
 XML_PROLOG = '<?xml version="1.0" encoding="UTF-8"?>'
 
 # Friendly name -> exact <para> the app sends with source-selection.
@@ -157,26 +162,31 @@ def fetch_description(url):
     return out
 
 
-def discover(timeout=3.0, fetch_descriptions=True):
+def discover_ssdp(timeout=6.0, fetch_descriptions=True):
+    """UPnP search, the way the JBL Music app found the speaker."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 4)
-    sock.settimeout(timeout)
+    sock.settimeout(0.5)
     sock.bind(("", 0))
-    payload = MSEARCH.encode("ascii")
-    try:
-        for _ in range(2):
-            sock.sendto(payload, SSDP_GROUP)
-    except OSError as exc:
-        sock.close()
-        raise SystemExit(f"SSDP send failed ({exc}); check that you are on the speaker's Wi-Fi") from exc
+    payloads = [MSEARCH.encode("ascii"),
+                MSEARCH.replace("upnp:rootdevice", "ssdp:all").encode("ascii")]
     seen = {}
     deadline = time.monotonic() + timeout
+    next_send = 0.0
     while time.monotonic() < deadline:
+        if time.monotonic() >= next_send:          # repeat the search like the app did
+            try:
+                for payload in payloads:
+                    sock.sendto(payload, SSDP_GROUP)
+            except OSError as exc:
+                sock.close()
+                raise SystemExit(f"SSDP send failed ({exc}); check that you are on the speaker's Wi-Fi") from exc
+            next_send = time.monotonic() + 2.0
         try:
             data, (ip, _port) = sock.recvfrom(8192)
         except socket.timeout:
-            break
+            continue
         text = data.decode("utf-8", "replace")
         headers = {}
         for line in text.split("\r\n")[1:]:
@@ -202,6 +212,194 @@ def discover(timeout=3.0, fetch_descriptions=True):
         seen[key] = entry
     sock.close()
     return list(seen.values())
+
+
+# -- minimal mDNS (Bonjour) browser, standard library only ------------------
+def _dns_name(name):
+    out = b""
+    for label in name.strip(".").split("."):
+        raw = label.encode("utf-8")
+        out += bytes([len(raw)]) + raw
+    return out + b"\x00"
+
+
+def _mdns_query(names, qtype):
+    pkt = struct.pack("!HHHHHH", 0, 0, len(names), 0, 0, 0)
+    for n in names:
+        pkt += _dns_name(n) + struct.pack("!HH", qtype, 1 | 0x8000)   # QU bit: please answer us directly
+    return pkt
+
+
+def _read_name(pkt, off):
+    labels, jumped, end, hops = [], False, None, 0
+    while True:
+        hops += 1
+        if hops > 128:
+            raise ValueError("bad name")
+        length = pkt[off]
+        if length == 0:
+            off += 1
+            break
+        if length & 0xC0 == 0xC0:
+            pointer = struct.unpack("!H", pkt[off:off + 2])[0] & 0x3FFF
+            if not jumped:
+                end = off + 2
+            jumped, off = True, pointer
+            continue
+        off += 1
+        labels.append(pkt[off:off + length].decode("utf-8", "replace"))
+        off += length
+    return ".".join(labels), (end if jumped else off)
+
+
+def _parse_mdns(pkt):
+    """Return (owner name, type, value) for the PTR/SRV/TXT/A records in a DNS message."""
+    recs = []
+    try:
+        _id, _flags, qd, an, ns, ar = struct.unpack("!HHHHHH", pkt[:12])
+        off = 12
+        for _ in range(qd):
+            _, off = _read_name(pkt, off)
+            off += 4
+        for _ in range(an + ns + ar):
+            name, off = _read_name(pkt, off)
+            rtype, _rclass, _ttl, rdlen = struct.unpack("!HHIH", pkt[off:off + 10])
+            off += 10
+            rdata, rdstart = pkt[off:off + rdlen], off
+            off += rdlen
+            if rtype == 12:
+                recs.append((name, "PTR", _read_name(pkt, rdstart)[0]))
+            elif rtype == 33:
+                _prio, _weight, port = struct.unpack("!HHH", rdata[:6])
+                recs.append((name, "SRV", (_read_name(pkt, rdstart + 6)[0], port)))
+            elif rtype == 1 and rdlen == 4:
+                recs.append((name, "A", socket.inet_ntoa(rdata)))
+            elif rtype == 16:
+                items, i = [], 0
+                while i < len(rdata):
+                    n = rdata[i]
+                    items.append(rdata[i + 1:i + 1 + n].decode("utf-8", "replace"))
+                    i += 1 + n
+                recs.append((name, "TXT", items))
+    except (struct.error, IndexError, ValueError):
+        pass
+    return recs
+
+
+def discover_mdns(timeout=5.0):
+    """Find AirPlay / Spotify Connect responders. The L16 advertises both when it is on Wi-Fi."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if hasattr(socket, "SO_REUSEPORT"):
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except OSError:
+            pass
+    try:                                   # listen on the mDNS port too, for multicast replies
+        sock.bind(("", MDNS_GROUP[1]))
+        mreq = struct.pack("4s4s", socket.inet_aton(MDNS_GROUP[0]), socket.inet_aton("0.0.0.0"))
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    except OSError:                        # fall back to unicast replies only
+        sock.close()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.bind(("", 0))
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+    sock.settimeout(0.3)
+
+    ptr, srv, txt, addr, sender = {}, {}, {}, {}, {}
+    asked = set()
+
+    def ask(names, qtype):
+        try:
+            sock.sendto(_mdns_query(names, qtype), MDNS_GROUP)
+        except OSError:
+            pass
+
+    deadline = time.monotonic() + timeout
+    next_send = 0.0
+    while time.monotonic() < deadline:
+        now = time.monotonic()
+        if now >= next_send:
+            ask(list(MDNS_SERVICES), 12)
+            next_send = now + 1.5
+        try:
+            data, (ip, _port) = sock.recvfrom(9000)
+        except socket.timeout:
+            data = None
+        except OSError:
+            break
+        if data:
+            for name, rtype, value in _parse_mdns(data):
+                key = name.lower()
+                if rtype == "PTR":
+                    ptr.setdefault(key, set()).add(value)
+                    sender.setdefault(value.lower(), ip)
+                elif rtype == "SRV":
+                    srv[key] = value
+                elif rtype == "TXT":
+                    txt[key] = value
+                elif rtype == "A":
+                    addr[key] = value
+        # follow-up questions for instances we only half know
+        for service in MDNS_SERVICES:
+            for inst in ptr.get(service, ()):
+                k = inst.lower()
+                if k not in srv and ("SRV", k) not in asked:
+                    asked.add(("SRV", k)); ask([inst], 33)
+                elif k in srv and srv[k][0].lower() not in addr and ("A", srv[k][0].lower()) not in asked:
+                    asked.add(("A", srv[k][0].lower())); ask([srv[k][0]], 1)
+    sock.close()
+
+    results = []
+    for service in MDNS_SERVICES:
+        for inst in sorted(ptr.get(service, ())):
+            k = inst.lower()
+            host, port = srv.get(k, ("", 0))
+            ip = addr.get(host.lower(), "") or sender.get(k, "")
+            items = txt.get(k, [])
+            label = inst[:-len(service) - 1] if k.endswith("." + service) else inst
+            if service.startswith("_raop") and "@" in label:
+                label = label.split("@", 1)[1]
+            model = next((t.split("=", 1)[1] for t in items if t.startswith(("am=", "model=", "modelDisplayName="))), "")
+            blob = (label + " " + model + " " + " ".join(items)).lower()
+            results.append({
+                "ip": ip, "friendlyName": label, "modelName": model, "host": host, "port": port,
+                "service": service.split(".")[0].lstrip("_"), "txt": items, "location": "",
+                "authentics": any(w in blob for w in ("l16", "l8", "authentics", "jbl")),
+            })
+    return results
+
+
+def discover(timeout=6.0, fetch_descriptions=True):
+    """UPnP search and mDNS browse at the same time, merged by IP address."""
+    found = {"ssdp": [], "mdns": [], "error": None}
+
+    def run_ssdp():
+        try:
+            found["ssdp"] = discover_ssdp(timeout, fetch_descriptions)
+        except SystemExit as exc:
+            found["error"] = exc
+
+    t = threading.Thread(target=run_ssdp, daemon=True)
+    t.start()
+    found["mdns"] = discover_mdns(min(timeout, 5.0))
+    t.join()
+    if found["error"] is not None and not found["mdns"]:
+        raise found["error"]
+    by_ip, out = {}, []
+    for d in found["ssdp"] + found["mdns"]:
+        ip = d.get("ip", "")
+        if ip and ip in by_ip:
+            existing = by_ip[ip]
+            for key, val in d.items():
+                if val and not existing.get(key):
+                    existing[key] = val
+            existing["authentics"] = existing.get("authentics") or d.get("authentics", False)
+            continue
+        if ip:
+            by_ip[ip] = d
+        out.append(d)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -321,15 +519,19 @@ def show(m, label=None):
 
 
 def cmd_discover(args, _spk=None):
-    devices = discover(args.dtimeout if args.dtimeout is not None else args.timeout)
+    devices = discover(args.dtimeout)
     if not devices:
-        print("No SSDP responders found. Is the speaker on the same subnet?")
+        print("Nothing answered the UPnP or AirPlay search. Is the speaker on this Wi-Fi network?")
         return 1
     for d in devices:
         flag = "AUTHENTICS" if d.get("authentics") else "          "
-        print(f"{flag} {d['ip']:15} {d.get('friendlyName', '?')}  "
-              f"model={d.get('modelName', '?')}  desc={d.get('modelDescription', '?')}")
-        print(f"           location={d['location']}")
+        via = f"  via {d['service']}" if d.get("service") else ""
+        print(f"{flag} {d.get('ip') or '?':15} {d.get('friendlyName', '?')}  "
+              f"model={d.get('modelName') or '?'}  desc={d.get('modelDescription') or '?'}{via}")
+        if d.get("location"):
+            print(f"           location={d['location']}")
+        if d.get("host"):
+            print(f"           host={d['host']} port={d['port']}")
         if d.get("description_error"):
             print(f"           description: {d['description_error']}")
     return 0
@@ -459,7 +661,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("discover", help="find speakers with SSDP")
-    s.add_argument("--timeout", type=float, default=None, dest="dtimeout", help="seconds to listen (default 3)")
+    s.add_argument("--timeout", type=float, default=6.0, dest="dtimeout", help="seconds to listen (default 6)")
     s.set_defaults(fn=cmd_discover, needs_host=False)
     sub.add_parser("status", help="query power, volume, source, tone, Clari-Fi, name, version").set_defaults(fn=cmd_status)
     s = sub.add_parser("power"); s.add_argument("state", choices=["on", "off"])
