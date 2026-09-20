@@ -25,6 +25,12 @@ Python 3.8 or newer. On a Mac, `python3 --version` in Terminal will offer to ins
 
 ## Quick start on the Mac
 
+Double-click **`Start JBL UI.command`**. A Terminal window opens, stays open while the UI runs, and your browser opens the page.
+The first time, macOS may refuse because the file came from a download: right-click it and choose **Open**, or go to
+System Settings → Privacy & Security and click **Open Anyway**. Do not double-click `jbl_ui.py` itself; that only opens it in a text editor.
+
+Or from Terminal:
+
 ```bash
 cd jbl-authentics
 python3 jbl_ui.py
