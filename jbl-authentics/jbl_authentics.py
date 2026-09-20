@@ -370,8 +370,73 @@ def discover_mdns(timeout=5.0):
     return results
 
 
-def discover(timeout=6.0, fetch_descriptions=True):
-    """UPnP search and mDNS browse at the same time, merged by IP address."""
+def local_ipv4():
+    """This machine's LAN address (no packets are sent; UDP connect only picks a route)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        return s.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        s.close()
+
+
+def probe(ip, port=PORT, timeout=2.0):
+    """Open the control port and ask for device_name. None = not a speaker, '' = open but silent."""
+    try:
+        spk = Authentics(ip, port, timeout=timeout, connect_timeout=timeout)
+    except OSError:
+        return None
+    try:
+        m = spk.query("device_name", timeout)
+        return m["para"] if m else ""
+    except (OSError, ConnectionError):
+        return None
+    finally:
+        spk.close()
+
+
+def scan_subnet(hosts=None, port=PORT, timeout=0.4, workers=64):
+    """Find hosts with the control port open, then ask each for its name.
+    Works even when the router blocks multicast. Returns [(ip, name_or_empty)]."""
+    if hosts is None:
+        me = local_ipv4()
+        if not me:
+            return []
+        base = me.rsplit(".", 1)[0]
+        hosts = [f"{base}.{i}" for i in range(1, 255) if f"{base}.{i}" != me]
+    queue, open_hosts, lock = list(hosts), [], threading.Lock()
+
+    def worker():
+        while True:
+            with lock:
+                if not queue:
+                    return
+                ip = queue.pop()
+            try:
+                socket.create_connection((ip, port), timeout=timeout).close()
+            except OSError:
+                continue
+            with lock:
+                open_hosts.append(ip)
+
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(min(workers, len(hosts)))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    results = []
+    for ip in sorted(open_hosts, key=lambda x: [int(n) for n in x.split(".")]):
+        name = probe(ip, port)
+        if name is not None:
+            results.append((ip, name))
+    return results
+
+
+def discover(timeout=6.0, fetch_descriptions=True, scan=True):
+    """UPnP search and mDNS browse at the same time, merged by IP address.
+    If nothing that looks like an Authentics answers, scan the local /24 for the control port."""
     found = {"ssdp": [], "mdns": [], "error": None}
 
     def run_ssdp():
@@ -399,6 +464,18 @@ def discover(timeout=6.0, fetch_descriptions=True):
         if ip:
             by_ip[ip] = d
         out.append(d)
+    if scan and not any(d.get("authentics") for d in out):
+        for ip, name in scan_subnet():
+            d = by_ip.get(ip)
+            if d is None:
+                d = {"ip": ip, "friendlyName": "", "modelName": "", "location": "", "service": ""}
+                by_ip[ip] = d
+                out.append(d)
+            d["authentics"] = True
+            d["control_port"] = True
+            d["service"] = (d.get("service") + "+" if d.get("service") else "") + "port 10025"
+            if name and not d.get("friendlyName"):
+                d["friendlyName"] = name
     return out
 
 
@@ -406,8 +483,8 @@ def discover(timeout=6.0, fetch_descriptions=True):
 # Control connection
 # --------------------------------------------------------------------------
 class Authentics:
-    def __init__(self, host, port=PORT, timeout=5.0, verbose=False):
-        self.sock = socket.create_connection((host, port), timeout=15)
+    def __init__(self, host, port=PORT, timeout=5.0, verbose=False, connect_timeout=15.0):
+        self.sock = socket.create_connection((host, port), timeout=connect_timeout)
         self.sock.settimeout(timeout)
         self.timeout = timeout
         self.verbose = verbose
@@ -519,9 +596,12 @@ def show(m, label=None):
 
 
 def cmd_discover(args, _spk=None):
+    print(f"Searching for {args.dtimeout:.0f} s with UPnP and AirPlay, then scanning "
+          f"{local_ipv4() or 'the local network'} for the control port if needed...", file=sys.stderr)
     devices = discover(args.dtimeout)
     if not devices:
-        print("Nothing answered the UPnP or AirPlay search. Is the speaker on this Wi-Fi network?")
+        print("Nothing answered the UPnP or AirPlay search and no host has port 10025 open. "
+              "Is the speaker on this Wi-Fi network?")
         return 1
     for d in devices:
         flag = "AUTHENTICS" if d.get("authentics") else "          "

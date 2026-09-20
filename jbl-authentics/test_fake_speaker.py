@@ -107,11 +107,28 @@ def test_mdns_discovery():
     print("mDNS discovery OK")
 
 
+def test_scan(port):
+    assert ja.scan_subnet(hosts=["127.0.0.1"], port=port) == [("127.0.0.1", "JBL L16")]
+    assert ja.probe("127.0.0.1", port=1) is None
+    saved = ja.discover_ssdp, ja.discover_mdns, ja.scan_subnet
+    ja.discover_ssdp = lambda *a, **k: [{"ip": "10.0.0.1", "location": "http://10.0.0.1/desc.xml", "authentics": False, "friendlyName": "router"}]
+    ja.discover_mdns = lambda *a, **k: []
+    ja.scan_subnet = lambda *a, **k: [("10.0.0.77", "JBL L16")]
+    try:
+        found = ja.discover(1.0)
+    finally:
+        ja.discover_ssdp, ja.discover_mdns, ja.scan_subnet = saved
+    spk = [d for d in found if d["ip"] == "10.0.0.77"]
+    assert len(found) == 2 and spk and spk[0]["authentics"] and spk[0]["friendlyName"] == "JBL L16" and spk[0]["service"] == "port 10025", found
+    print("subnet scan OK")
+
+
 def main():
     test_mdns_parsing()
     test_mdns_discovery()
     fake = FakeSpeaker()
     port = fake.start()
+    test_scan(port)
 
     # --- unit checks ---------------------------------------------------------
     body = (b'<?xml version="1.0" encoding="UTF-8"?> <harman> <mm> <common> <control> '
