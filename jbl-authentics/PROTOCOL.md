@@ -79,6 +79,8 @@ Whether the speaker prefixes an HTTP‑style header line is unknown; scanning th
 | Heartbeat | `heart-alive` | *(empty, zone empty)* | every 10 s |
 | Query | `query-status` | see below | one query per message |
 
+From the owner's manual (page 9): the volume has 40 steps (hence `0`…`39`), the default after power‑on is 12, and volume 0 is the only mute the product has, so `mute-on`/`mute-off` are probably no‑ops on the L16. The Source button cycles AirPlay → DLNA → Bluetooth → Aux → Phono → Optical, only one source plays at a time, and the speaker auto‑switches to a source that starts streaming while another is active. The Power button toggles between standby and operating mode.
+
 `query-status` parameters the Authentics screens use: `power`, `volume`, `source`, `bass_level`, `signal_doctor`, `spectrum_data`, `device_name`, `sys_version`. Defined in the table but unused for this product: `mute`, `Manual_EQ`, `MAC_address`, `playback`, `battery_level`, `eq_mode`.
 
 The shared table also carries AVR/BDS names (`play`, `pause`, `next`, `previous`, `forward`, `reverse`, `home`, `up`, `down`, `left`, `right`, `ok`, `back`, `options`, `settings`, `sleep`, `standby`, `info`, `set_eq_mode` with `Stereo Widening`/`Jazz`/`Rock`/`Gaming`/`Basic`, …). No Authentics screen sends them; the speaker may or may not accept them.
