@@ -683,6 +683,75 @@ def cmd_probe(args, _spk=None):
     return 0
 
 
+def cmd_web(args, _spk=None):
+    """Save every page the speaker's web server offers, so hidden settings pages can be found."""
+    import html.parser
+    from urllib.parse import urljoin, urlparse
+
+    class Links(html.parser.HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.links, self.forms = [], []
+
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            if tag in ("a", "link", "iframe", "frame", "script", "img") and (a.get("href") or a.get("src")):
+                self.links.append(a.get("href") or a.get("src"))
+            if tag == "form":
+                self.forms.append((a.get("method", "get").upper(), a.get("action", ""), a.get("enctype", "")))
+            if tag == "input" and self.forms:
+                self.forms[-1] = self.forms[-1] + ((a.get("type", "text"), a.get("name", "")),)
+
+    base = f"http://{args.address}/"
+    outdir = args.out
+    import os
+    os.makedirs(outdir, exist_ok=True)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    queue = [base + p.lstrip("/") for p in ["", "index.html", "index.htm", "status.html", "settings.html", "network.html",
+                                            "setup.html", "config.html", "info.html", "update.html", "wifi.html", "cgi-bin/"]]
+    seen, found = set(), []
+    while queue and len(seen) < args.limit:
+        url = queue.pop(0)
+        if url in seen or urlparse(url).netloc != urlparse(base).netloc:
+            continue
+        seen.add(url)
+        try:
+            with opener.open(url, timeout=5) as r:
+                body, ctype, code = r.read(2_000_000), r.headers.get("Content-Type", ""), r.status
+        except urllib.error.HTTPError as exc:
+            if url == base:
+                print(f"  {url}  -> HTTP {exc.code}")
+            continue
+        except Exception as exc:  # noqa: BLE001
+            if url == base:
+                print(f"  {url}  -> {exc}")
+            continue
+        name = urlparse(url).path.strip("/").replace("/", "_") or "index"
+        if "." not in name:
+            name += ".html" if "html" in ctype else ".bin"
+        with open(os.path.join(outdir, name), "wb") as f:
+            f.write(body)
+        found.append((url, code, ctype.split(";")[0], len(body)))
+        if "html" in ctype or "javascript" in ctype or "text" in ctype:
+            text = body.decode("utf-8", "replace")
+            parser = Links()
+            try:
+                parser.feed(text)
+            except Exception:  # noqa: BLE001
+                pass
+            for form in parser.forms:
+                print(f"  form on {url}: {form[0]} {urljoin(url, form[1]) or url} {form[2]}  fields={[f for f in form[3:]]}")
+            hrefs = parser.links + re.findall(r"""['"]((?:/|\./|[A-Za-z0-9_-]+\.(?:html?|cgi|js|xml|json|asp))[^'"\s]*)['"]""", text)
+            for h in hrefs:
+                target = urljoin(url, h.split("#")[0])
+                if target not in seen and urlparse(target).netloc == urlparse(base).netloc:
+                    queue.append(target)
+    for url, code, ctype, size in found:
+        print(f"  {url}  -> HTTP {code}  {ctype}  {size} bytes")
+    print(f"saved {len(found)} file(s) to {os.path.abspath(outdir)}")
+    return 0 if found else 1
+
+
 def cmd_status(args, spk):
     for what in STATUS_QUERIES:
         show(spk.query(what, timeout=2.0), what)
@@ -811,6 +880,9 @@ def main(argv=None):
     s.set_defaults(fn=cmd_discover, needs_host=False)
     s = sub.add_parser("probe", help="check one address: open ports and whether the control port answers")
     s.add_argument("address"); s.set_defaults(fn=cmd_probe, needs_host=False)
+    s = sub.add_parser("web", help="save every page of the speaker's web server for inspection")
+    s.add_argument("address"); s.add_argument("--out", default="speaker-web"); s.add_argument("--limit", type=int, default=60)
+    s.set_defaults(fn=cmd_web, needs_host=False)
     sub.add_parser("status", help="query power, volume, source, tone, Clari-Fi, name, version").set_defaults(fn=cmd_status)
     s = sub.add_parser("power"); s.add_argument("state", choices=["on", "off"])
     s.add_argument("--alt", action="store_true", help="use the <status> element form instead of power-on/power-off")

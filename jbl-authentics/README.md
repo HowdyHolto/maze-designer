@@ -49,6 +49,8 @@ python3 jbl_authentics.py --host 192.168.1.50 tone 6 5 7
 python3 jbl_authentics.py --host 192.168.1.50 clarifi on 5
 python3 jbl_authentics.py --host 192.168.1.50 raw query-status MAC_address
 python3 jbl_authentics.py --host 192.168.1.50 monitor      # print everything the speaker sends
+python3 jbl_authentics.py probe 192.168.1.50            # which ports answer at that address
+python3 jbl_authentics.py web 192.168.1.50              # save the speaker's web pages to ./speaker-web
 ```
 
 ## Try it without a speaker
