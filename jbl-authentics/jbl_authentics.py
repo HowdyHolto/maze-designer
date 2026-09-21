@@ -810,6 +810,56 @@ def bootloader_upload(ip, blob, filename, timeout=600.0):
         return None, f"{type(exc).__name__}: {exc}"
 
 
+def bootloader_upload_raw(ip, blob, filename, mode="lean", timeout=600.0):
+    """Hand-built multipart POST over a plain socket, so every byte of the request is under our control.
+    mode 'lean'   : shortest possible wrapping (a 3-byte boundary, no part Content-Type), HTTP/1.0
+    mode 'safari' : the headers and boundary style a WebKit browser sends"""
+    host, _, port = ip.partition(":")
+    port = int(port) if port else 80
+    if mode == "lean":
+        boundary = "b"
+        part = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"appFirmware\"; filename=\"{filename}\"\r\n\r\n").encode()
+        tail = f"\r\n--{boundary}--\r\n".encode()
+        body = part + blob + tail
+        head = (f"POST /goform/aformNetFwUpdateHandler HTTP/1.0\r\nHost: {host}\r\n"
+                f"Content-Type: multipart/form-data; boundary={boundary}\r\nContent-Length: {len(body)}\r\n\r\n").encode()
+    else:
+        boundary = "----WebKitFormBoundary" + "%016x" % (int(time.time() * 1000) & 0xffffffffffffffff)
+        part = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"appFirmware\"; filename=\"{filename}\"\r\n"
+                f"Content-Type: application/octet-stream\r\n\r\n").encode()
+        tail = (f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"uploadFile\"\r\n\r\nUpdate\r\n--{boundary}--\r\n").encode()
+        body = part + blob + tail
+        head = (f"POST /goform/aformNetFwUpdateHandler HTTP/1.1\r\nHost: {host}\r\n"
+                f"Origin: http://{host}\r\nReferer: http://{host}/\r\nConnection: keep-alive\r\n"
+                f"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
+                f"User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15\r\n"
+                f"Content-Type: multipart/form-data; boundary={boundary}\r\nContent-Length: {len(body)}\r\n\r\n").encode()
+    sock = socket.create_connection((host, port), timeout=timeout)
+    sent = 0
+    try:
+        sock.sendall(head)
+        view = memoryview(body)
+        while sent < len(body):
+            n = sock.send(view[sent:sent + 65536])
+            if n == 0:
+                break
+            sent += n
+        sock.settimeout(timeout)
+        reply = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            reply += chunk
+            if len(reply) > 2000:
+                break
+        return sent, len(body), reply[:300].decode("utf-8", "replace")
+    except OSError as exc:
+        return sent, len(body), f"{type(exc).__name__}: {exc}"
+    finally:
+        sock.close()
+
+
 def _bl_state(d, table):
     if not d:
         return "?"
@@ -849,8 +899,18 @@ def cmd_fwflash(args, _spk=None):
     if not args.yes and input("upload now? [y/N] ").strip().lower() != "y":
         return 1
 
+    if args.strip_ff:
+        end = len(blob)
+        while end > 0 and blob[end - 1] == 0xFF:
+            end -= 1
+        print(f"stripping {len(blob) - end} trailing 0xFF bytes")
+        blob = blob[:end]
     result = {}
-    t = threading.Thread(target=lambda: result.update(r=bootloader_upload(ip, blob, args.filename)), daemon=True)
+    if args.upload == "urllib":
+        t = threading.Thread(target=lambda: result.update(r=bootloader_upload(ip, blob, args.filename)), daemon=True)
+    else:
+        t = threading.Thread(target=lambda: result.update(r=bootloader_upload_raw(ip, blob, args.filename, args.upload)), daemon=True)
+    print(f"upload mode: {args.upload}, {len(blob)} image bytes")
     t.start()
     last = None
     while t.is_alive():
@@ -1114,6 +1174,8 @@ def main(argv=None):
     s.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     s.add_argument("--filename", default="JBL_L16_wifi_module.bin", help="file name presented to the bootloader in the upload")
     s.add_argument("--test-bytes", type=int, default=0, help="upload only this many bytes to probe the transfer; never flashes")
+    s.add_argument("--upload", choices=["lean", "safari", "urllib"], default="lean", help="how to build the upload request (default lean)")
+    s.add_argument("--strip-ff", action="store_true", help="drop trailing 0xFF padding from the image before sending")
     s.set_defaults(fn=cmd_fwflash, needs_host=False)
     s = sub.add_parser("web", help="save every page of the speaker's web server for inspection")
     s.add_argument("address"); s.add_argument("--out", default="speaker-web"); s.add_argument("--limit", type=int, default=60)

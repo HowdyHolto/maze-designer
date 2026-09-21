@@ -209,12 +209,14 @@ def test_fwflash(tmpdir="/tmp"):
     httpd = HTTPServer(("127.0.0.1", 0), _FakeBootloaderFlash)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     addr = f"127.0.0.1:{httpd.server_address[1]}"
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        rc = ja.main(["--timeout", "2", "fwflash", addr, path, "--yes"])
-    text = out.getvalue()
-    assert rc == 0 and "validation passed" in text and "new firmware: s9.7.5.9" in text and "flash: finished" in text and "has restarted" in text, text
-    assert _FakeBootloaderFlash.state["uploaded"] == secs[2]
+    for mode in ("lean", "safari", "urllib"):
+        _FakeBootloaderFlash.state.update(uploaded=None, flash=0, restarted=False)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = ja.main(["--timeout", "2", "fwflash", addr, path, "--yes", "--upload", mode])
+        text = out.getvalue()
+        assert rc == 0 and "validation passed" in text and "new firmware: s9.7.5.9" in text and "flash: finished" in text and "has restarted" in text, (mode, text)
+        assert _FakeBootloaderFlash.state["uploaded"] == secs[2], mode
     # wrong section is rejected by validation, never flashed
     _FakeBootloaderFlash.state.update(uploaded=None, flash=0, restarted=False)
     out = io.StringIO()
