@@ -135,6 +135,12 @@ The app offers three methods for the Authentics:
 
 Methods 2 and 3 need no app at all, so new owners are never locked out by the app's disappearance.
 
+The owner's manual (page 8) gives the exact button sequences:
+
+* **iOS Wi‑Fi sharing over USB:** connect the iPhone to the speaker's USB port, put the speaker in the AirPlay source, hold Source for at least three seconds; iOS shows "Share Wi‑Fi Settings?", tap Allow; the join takes at least 40 seconds and ends with a tone. (Whether current iOS versions still show this prompt is unverified.)
+* **Manual connect mode:** switch the speaker on and wait a minute; select the DLNA source; hold Source for three seconds until the DLNA LED flashes twice; the speaker now broadcasts a network named `JBL_L16_WFXXXX` (last four characters vary). Join it from any computer or phone, browse to `http://192.168.1.1/`, and the setup page appears: "Current status" (signal strength, AP name, IP address, WPS PIN), "Name Your Product" (default `JBL_L16_WF`) with Apply, and "Choose Your Network" with Refresh; pick the network, enter the password, Save. The DLNA LED stops flashing once connected.
+* **WPS:** router WPS button, then the speaker's WPS button for under two seconds within a minute; hold it for more than three seconds instead for WPS‑PIN mode, where the PIN is shown at the top of the speaker's web page.
+
 ---
 
 ## 7. Firmware updates
