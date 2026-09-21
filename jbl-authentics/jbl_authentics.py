@@ -361,13 +361,32 @@ def discover_mdns(timeout=5.0):
             if service.startswith("_raop") and "@" in label:
                 label = label.split("@", 1)[1]
             model = next((t.split("=", 1)[1] for t in items if t.startswith(("am=", "model=", "modelDisplayName="))), "")
+            info = {}
+            if service.startswith("_spotify-connect") and ip and port:
+                info = spotify_info(ip, port, next((t.split("=", 1)[1] for t in items if t.startswith("CPath=")), "/"))
+                if info:
+                    label = info.get("remoteName") or label
+                    model = (info.get("brandDisplayName", "") + " " + info.get("modelDisplayName", "")).strip() or model
             blob = (label + " " + model + " " + " ".join(items)).lower()
             results.append({
                 "ip": ip, "friendlyName": label, "modelName": model, "host": host, "port": port,
                 "service": service.split(".")[0].lstrip("_"), "txt": items, "location": "",
+                "spotify": info,
                 "authentics": any(w in blob for w in ("l16", "l8", "authentics", "jbl")),
             })
     return results
+
+
+def spotify_info(ip, port, cpath="/"):
+    """Ask a Spotify Connect responder who it is (brand, model, name)."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://{ip}:{port}{cpath}?action=getInfo", timeout=2) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:            # noqa: BLE001 - any failure just means "unknown"
+        return {}
+    return {k: data[k] for k in ("remoteName", "brandDisplayName", "modelDisplayName",
+                                 "deviceType", "libraryVersion") if k in data}
 
 
 def local_ipv4():

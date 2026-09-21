@@ -9,6 +9,7 @@ import socket
 import struct
 import sys
 import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jbl_authentics as ja           # noqa: E402
@@ -52,12 +53,13 @@ def test_mdns_parsing():
 class FakeMdns(threading.Thread):
     """Answers PTR lazily (no extra records) so discover_mdns must ask SRV and A itself."""
 
-    def __init__(self):
+    def __init__(self, spotify_port=0):
         super().__init__(daemon=True)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("127.0.0.1", 0))
         self.port = self.sock.getsockname()[1]
         self.inst, self.host = "AABB@JBL L16._raop._tcp.local", "JBL-L16.local"
+        self.sp_inst, self.sp_host, self.sp_port = "SpotifyConnect._spotify-connect._tcp.local", "spotify-box.local", spotify_port
         self.questions = []
 
     def run(self):
@@ -77,12 +79,30 @@ class FakeMdns(threading.Thread):
                     answers.append((name, 16, _txt("am=Authentics L16")))
                 elif qtype == 1 and name == self.host:
                     answers.append((name, 1, socket.inet_aton("10.0.0.99")))
+                elif qtype == 12 and name == "_spotify-connect._tcp.local" and self.sp_port:
+                    answers.append((name, 12, ja._dns_name(self.sp_inst)))
+                    answers.append((self.sp_inst, 33, struct.pack("!HHH", 0, 0, self.sp_port) + ja._dns_name(self.sp_host)))
+                    answers.append((self.sp_inst, 16, _txt("CPath=/zc", "VERSION=1.0")))
+                    answers.append((self.sp_host, 1, socket.inet_aton("127.0.0.1")))
             if answers:
                 self.sock.sendto(_response(answers), peer)
 
 
+class _GetInfo(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        body = b'{"remoteName":"Living Room L16","brandDisplayName":"JBL","modelDisplayName":"Authentics L16","deviceType":"SPEAKER","libraryVersion":"2.0.1"}'
+        self.send_response(200 if "action=getInfo" in self.path and self.path.startswith("/zc") else 404)
+        self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(body))); self.end_headers()
+        self.wfile.write(body)
+
+
 def test_mdns_discovery():
-    responder = FakeMdns(); responder.start()
+    httpd = HTTPServer(("127.0.0.1", 0), _GetInfo)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    responder = FakeMdns(spotify_port=httpd.server_address[1]); responder.start()
     saved = ja.MDNS_GROUP
     ja.MDNS_GROUP = ("127.0.0.1", responder.port)
     try:
@@ -95,6 +115,9 @@ def test_mdns_discovery():
     assert d["ip"] == "10.0.0.99" and d["friendlyName"] == "JBL L16" and d["host"] == "JBL-L16.local"
     assert d["port"] == 5000 and d["modelName"] == "Authentics L16" and d["authentics"], d
     assert ("AABB@JBL L16._raop._tcp.local", 33) in responder.questions and ("JBL-L16.local", 1) in responder.questions
+    sp = [d for d in found if d["service"] == "spotify-connect"]
+    assert sp and sp[0]["ip"] == "127.0.0.1" and sp[0]["friendlyName"] == "Living Room L16" and sp[0]["modelName"] == "JBL Authentics L16" and sp[0]["authentics"], sp
+    assert ja.spotify_info("127.0.0.1", 1) == {}
     # merge with an SSDP hit for the same address
     saved_ssdp, saved_mdns = ja.discover_ssdp, ja.discover_mdns
     ja.discover_ssdp = lambda *a, **k: [{"ip": "10.0.0.99", "location": "http://10.0.0.99:8080/description.xml", "authentics": False}]
