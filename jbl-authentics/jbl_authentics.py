@@ -636,6 +636,52 @@ def cmd_discover(args, _spk=None):
     return 0
 
 
+PROBE_PORTS = [(10025, "control (HK API)"), (80, "web UI"), (8080, "UPnP description"),
+               (8889, "JukeBlox HTTP API"), (5000, "AirPlay audio (RAOP)"), (7000, "AirPlay"),
+               (49152, "UPnP alt"), (1400, "misc"), (554, "RTSP")]
+
+
+def cmd_probe(args, _spk=None):
+    """Check one address directly: which ports answer, and whether the control port talks."""
+    ip = args.address
+    print(f"probing {ip} ...")
+    any_open = False
+    for port, label in PROBE_PORTS:
+        try:
+            socket.create_connection((ip, port), timeout=args.timeout).close()
+            state = "OPEN"
+            any_open = True
+        except socket.timeout:
+            state = "no answer (timed out)"
+        except OSError as exc:
+            state = f"closed ({exc.strerror or exc})"
+        print(f"  port {port:5}  {label:24} {state}")
+    if not any_open:
+        print("Nothing answered. Either the speaker is asleep, on a different network, or the router "
+              "isolates wireless clients from each other.")
+        return 1
+    name = probe(ip, timeout=max(args.timeout, 3.0))
+    if name is None:
+        print("The control port did not accept a connection.")
+        return 1
+    print(f"control port answered; device_name = {name!r}" if name else
+          "control port accepted the connection but did not answer a device_name query")
+    for port in (80, 8080, 8889):
+        for path in ("/", "/description.xml"):
+            url = f"http://{ip}:{port}{path}"
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            try:
+                with opener.open(url, timeout=args.timeout) as r:
+                    body = r.read(4000).decode("utf-8", "replace")
+                title = re.search(r"<title>(.*?)</title>", body, re.S | re.I)
+                model = re.search(r"<(friendlyName|modelName|modelDescription)>(.*?)</", body, re.S | re.I)
+                print(f"  {url}  -> HTTP {r.status}  {title.group(1).strip() if title else ''} "
+                      f"{model.group(2).strip() if model else ''}".rstrip())
+            except Exception:  # noqa: BLE001
+                pass
+    return 0
+
+
 def cmd_status(args, spk):
     for what in STATUS_QUERIES:
         show(spk.query(what, timeout=2.0), what)
@@ -762,6 +808,8 @@ def main(argv=None):
     s = sub.add_parser("discover", help="find speakers with SSDP")
     s.add_argument("--timeout", type=float, default=6.0, dest="dtimeout", help="seconds to listen (default 6)")
     s.set_defaults(fn=cmd_discover, needs_host=False)
+    s = sub.add_parser("probe", help="check one address: open ports and whether the control port answers")
+    s.add_argument("address"); s.set_defaults(fn=cmd_probe, needs_host=False)
     sub.add_parser("status", help="query power, volume, source, tone, Clari-Fi, name, version").set_defaults(fn=cmd_status)
     s = sub.add_parser("power"); s.add_argument("state", choices=["on", "off"])
     s.add_argument("--alt", action="store_true", help="use the <status> element form instead of power-on/power-off")
