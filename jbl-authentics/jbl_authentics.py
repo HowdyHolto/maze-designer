@@ -833,7 +833,11 @@ def cmd_fwflash(args, _spk=None):
     else:
         blob = data
         print(f"uploading {os.path.basename(args.file)} as-is ({len(blob)} bytes, magic {blob[:4]!r})")
-    if blob[:4] != b"bCoD":
+    if args.test_bytes:
+        blob = blob[:args.test_bytes]
+        print(f"TEST MODE: sending only the first {len(blob)} bytes to see whether the transfer is accepted; "
+              "nothing will be flashed")
+    elif blob[:4] != b"bCoD":
         print("warning: this does not start with the Wi-Fi module image magic 'bCoD'; the bootloader will "
               "probably reject it, which is safe, but check that you picked the right file or section")
     try:
@@ -899,6 +903,9 @@ def cmd_fwflash(args, _spk=None):
         return 1
     print(f"validation passed. current firmware: {d[1] if len(d) > 1 else '?'}   "
           f"new firmware: {d[2] if len(d) > 2 else '?'}")
+    if args.test_bytes:
+        print("test mode: stopping here without flashing")
+        return 0
     if not args.yes and input("flash it now? [y/N] ").strip().lower() != "y":
         return 1
     text, f = bootloader_poll(ip, 3, args.timeout)
@@ -1106,6 +1113,7 @@ def main(argv=None):
     s.add_argument("--whole", action="store_true", help="send the file exactly as-is")
     s.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     s.add_argument("--filename", default="JBL_L16_wifi_module.bin", help="file name presented to the bootloader in the upload")
+    s.add_argument("--test-bytes", type=int, default=0, help="upload only this many bytes to probe the transfer; never flashes")
     s.set_defaults(fn=cmd_fwflash, needs_host=False)
     s = sub.add_parser("web", help="save every page of the speaker's web server for inspection")
     s.add_argument("address"); s.add_argument("--out", default="speaker-web"); s.add_argument("--limit", type=int, default=60)
