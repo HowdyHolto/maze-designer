@@ -646,7 +646,8 @@ def cmd_probe(args, _spk=None):
     ip = args.address
     print(f"probing {ip} ...")
     any_open = False
-    for port, label in PROBE_PORTS:
+    ports = [(args.port, "control (HK API)")] + [pl for pl in PROBE_PORTS if pl[0] != args.port]
+    for port, label in ports:
         try:
             socket.create_connection((ip, port), timeout=args.timeout).close()
             state = "OPEN"
@@ -660,7 +661,7 @@ def cmd_probe(args, _spk=None):
         print("Nothing answered. Either the speaker is asleep, on a different network, or the router "
               "isolates wireless clients from each other.")
         return 1
-    name = probe(ip, timeout=max(args.timeout, 3.0))
+    name = probe(ip, port=args.port, timeout=max(args.timeout, 3.0))
     if name is None:
         print("The control port did not accept a connection.")
         return 1
