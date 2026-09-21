@@ -131,19 +131,88 @@ def test_mdns_discovery():
 
 
 class _FakeBootloader(BaseHTTPRequestHandler):
+    """Replies copied from a real L16 bootloader page, plus the second progress handler."""
+    known = {"aformNetFwHandler", "aformFwUpdateProgessHandler", "aformHandlerSetNetFwUpdate", "aformHandlerRestartNotify"}
+    seen = []
+
     def log_message(self, *a):
         pass
 
+    def _send(self, out, code=200):
+        data = out.encode()
+        self.send_response(code); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+
+    def do_GET(self):
+        name = self.path.rsplit("/", 1)[-1]
+        _FakeBootloader.seen.append(("GET", name, ""))
+        if self.path.startswith("/goform/") and name in self.known:
+            return self._send("qwhgpstgrizEndRes\r\n")
+        self._send("<html><head><title>Document Error: Data follows</title></head>\n\t\t<body><h2>Access Error: Data follows</h2>"
+                   f"\n\t\t<p>Form {name} is not defined</p></body></html>\r\n\r\n", 404 if name else 200)
+
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
-        if self.path == "/goform/aformNetFwHandler" and body == "pollStatus=1":
+        name = self.path.rsplit("/", 1)[-1]
+        _FakeBootloader.seen.append(("POST", name, body))
+        if name == "aformNetFwHandler" and body == "pollStatus=1":
             out = "1qwhgpstgriz1qwhgpstgriz1qwhgpstgriz8zirgtspghwq0qwhgpstgrizEndRes\n"
-        elif self.path == "/goform/aformNetFwHandler" and body == "pollStatus=2":
+        elif name == "aformNetFwHandler" and body == "pollStatus=2":
             out = "2qwhgpstgriz1qwhgpstgriz2qwhgpstgriz1000zirgtspghwq1.29zirgtspghwqqwhgpstgrizEndRes\n"
+        elif name == "aformNetFwHandler" and body == "pollStatus=0":
+            out = "7qwhgpstgriz1qwhgpstgriz0qwhgpstgriz0qwhgpstgrizEndRes\n"
+        elif name == "aformFwUpdateProgessHandler" and body == "pollStatus=1":
+            out = "1qwhgpstgriz1qwhgpstgriz1qwhgpstgriz2zirgtspghwq37qwhgpstgrizEndRes\n"
+        elif name == "aformFwUpdateProgessHandler" and body == "pollStatus=2":
+            out = "2qwhgpstgriz1qwhgpstgriz2qwhgpstgriz1zirgtspghwq50qwhgpstgrizEndRes\n"
+        elif name == "aformHandlerSetNetFwUpdate" and body == "readyStatus=0":
+            out = "8qwhgpstgriz1qwhgpstgriz8qwhgpstgriz0qwhgpstgrizEndRes\n"
+        elif name not in self.known:
+            return self.do_GET()
         else:
             out = "qwhgpstgrizEndRes"
-        data = out.encode()
-        self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+        self._send(out)
+
+
+def _serve(handler):
+    httpd = HTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    return f"127.0.0.1:{httpd.server_address[1]}"
+
+
+def _run(*args):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = ja.main(list(args))
+    return rc, out.getvalue()
+
+
+def _build_bcod(segments, padding=140):
+    """A minimal JukeBlox module image: header, segment table with CRC-32s, 'DMP 3.x' marker, data, 0xFF pad."""
+    import zlib
+    hdr = bytearray(0xB8)
+    hdr[0:4] = b"bCoD"; hdr[4:8] = struct.pack("<I", 1); hdr[8:24] = b"20131106051708  "
+    hdr[0xB0:0xB8] = b"DMP 3.x\0"
+    body, off = b"", 0xB8
+    for i, (load, flags, data) in enumerate(segments):
+        struct.pack_into("<IIIII", hdr, 0x30 + i * 0x20, off, load, len(data), zlib.crc32(data) & 0xFFFFFFFF, flags)
+        body += data; off += len(data)
+    return bytes(hdr) + body + b"\xff" * padding
+
+
+def _build_hui(secs, versions=None, product=b"JBL_L16"):
+    """A HUI container with correct section and file checksums."""
+    versions = versions or [(9, 2, 1, 0)] * len(secs)
+    table_off, n = 0x30, len(secs)
+    body_off = table_off + n * 32
+    table, blobs, off = b"", b"", body_off
+    for i, blob in enumerate(secs):
+        table += struct.pack("<I4BIII", i, *versions[i], off, len(blob), ja.hui_checksum(blob)) + b"\x00" * 12
+        blobs += blob; off += len(blob)
+    total = body_off + len(blobs)
+    hdr = b"HUI " + bytes([9, 2, 1, 0]) + struct.pack("<IIII", n, table_off, total, 0) + b"\x00" * 8 + product.ljust(16, b"\x00")
+    assert len(hdr) == table_off
+    whole = hdr + table + blobs
+    return whole[:0x14] + struct.pack("<I", ja.hui_checksum(whole)) + whole[0x18:]
 
 
 class _FakeBootloaderFlash(BaseHTTPRequestHandler):
@@ -190,17 +259,9 @@ class _FakeBootloaderFlash(BaseHTTPRequestHandler):
 
 def test_fwflash(tmpdir="/tmp"):
     import struct, tempfile
-    # build a small fake container: 3 sections, section 2 starts with the module magic
-    secs = [b"MCU" * 100, b"CSR-dfu2" + b"\x00" * 50, b"bCoD" + b"\x01\x00\x00\x00" + b"20131106051708  " + b"\xff" * 3000]
-    table_off, n = 0x30, len(secs)
-    body_off = table_off + n * 32
-    table, blobs, off = b"", b"", body_off
-    for i, blob in enumerate(secs):
-        table += struct.pack("<I4BIII", i, 9, 2, 1, 0, off, len(blob), 0) + b"\x00" * 12
-        blobs += blob; off += len(blob)
-    hdr = b"HUI " + bytes([9, 2, 1, 0]) + struct.pack("<IIII", n, table_off, body_off + len(blobs), 0) + b"\x00" * 8 + b"JBL_L16" + b"\x00" * 9
-    container = hdr + table + blobs
-    assert len(hdr) == table_off
+    # build a small fake container: 3 sections, section 2 is a module image
+    secs = [b"MCU" * 100, b"CSR-dfu2" + b"\x00" * 50, _build_bcod([(0x401c0000, 0x540000, b"app" * 1000)])]
+    container = _build_hui(secs)
     path = tempfile.mktemp(suffix=".HUI", dir=tmpdir)
     open(path, "wb").write(container)
     _data, parsed = ja.hui_sections(path)
@@ -227,14 +288,71 @@ def test_fwflash(tmpdir="/tmp"):
 
 
 def test_fwstatus():
-    httpd = HTTPServer(("127.0.0.1", 0), _FakeBootloader)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        rc = ja.main(["--timeout", "2", "fwstatus", f"127.0.0.1:{httpd.server_address[1]}"])
-    text = out.getvalue()
-    assert rc == 0 and "transfer state: update failed, 0%" in text and "validation: not ready yet" in text and "current firmware: 1.29" in text, text
+    addr = _serve(_FakeBootloader)
+    rc, text = _run("--timeout", "2", "fwstatus", addr)
+    assert rc == 0, text
+    for want in ("aformNetFwHandler pollStatus=1", "transfer state: update failed, 0%", "validation: not ready yet; current firmware 1.29",
+                 "aformFwUpdateProgessHandler pollStatus=1", "transfer state: downloading, 37%", "flash state: erasing flash, 50%"):
+        assert want in text, (want, text)
+    rc, text = _run("fwstatus", addr, "--handler", "aformNetFwHandler", "--poll", "1")
+    assert rc == 0 and text.count("pollStatus=") == 1 and "update failed" in text, text
+    rc, text = _run("fwstatus", addr, "--watch", "0.2", "--for", "0.7")
+    lines = [l for l in text.splitlines() if l.strip()]
+    assert rc == 0 and len(lines) == 4 and all(":" in l[:8] and "pollStatus=" in l for l in lines), text
+    rc, text = _run("--timeout", "1", "fwstatus", "127.0.0.1:1")
+    assert rc == 1 and "ConnectionRefusedError" in text or "URLError" in text, text
     print("fwstatus OK")
+
+
+def test_fwhandlers():
+    addr = _serve(_FakeBootloader)
+    rc, text = _run("fwhandlers", addr)
+    assert rc == 0, text
+    assert "aformNetFwHandler: present" in text and "aformFwUpdateProgessHandler: present" in text, text
+    assert "aformHandlerObtainConnStatus: not present" in text and "aformHandlerRefreshPage: not present" in text, text
+    assert "aformHandlerRestartNotify" not in text, "the destructive handlers must not be probed by default"
+    rc, text = _run("fwhandlers", addr, "aformHandlerRestartNotify", "nothing")
+    assert rc == 0 and "aformHandlerRestartNotify: present" in text and "nothing: not present" in text, text
+    print("fwhandlers OK")
+
+
+def test_fwprepare():
+    _FakeBootloader.seen.clear()
+    addr = _serve(_FakeBootloader)
+    rc, text = _run("fwprepare", addr, "--yes")
+    assert rc == 0 and "the module reports that it restarted" in text and "state now: transfer state: update failed, 0%" in text, text
+    assert ("POST", "aformHandlerSetNetFwUpdate", "readyStatus=0") in _FakeBootloader.seen
+    print("fwprepare OK")
+
+
+def test_fwinfo(tmpdir="/tmp"):
+    import tempfile
+    image = _build_bcod([(0x401c0000, 0x540000, b"app" * 500), (0, 0x10000, b"cfg" * 20), (0x40700000, 0xe0000, b"res" * 100)])
+    container = _build_hui([b"MCU" * 100, b"CSR-dfu2" + b"\x00" * 51, image, b"dsp" * 33],
+                           versions=[(9, 2, 1, 0), (3, 2, 1, 0), (9, 7, 5, 9), (9, 1, 0, 0)])
+    good = tempfile.mktemp(suffix=".HUI", dir=tmpdir); open(good, "wb").write(container)
+    rc, text = _run("fwinfo", good)
+    assert rc == 0 and "all checksums OK" in text and "MISMATCH" not in text, text
+    assert "version 0.1.2.9" in text and "section 2: version bytes 9.5.7.9" in text and "3 segment(s), 140 bytes of padding" in text, text
+    assert text.count("crc32 ") == 3 and "load address 0x40700000" in text and "Bluetooth firmware" in text, text
+    bad = bytearray(container); bad[-5] ^= 0x01
+    badp = tempfile.mktemp(suffix=".HUI", dir=tmpdir); open(badp, "wb").write(bad)
+    rc, text = _run("fwinfo", badp)
+    assert rc == 1 and "section 3" in text and "checksum 0x" in text and "CHECKSUM MISMATCH" in text, text
+    assert "file checksum" in text and text.count("MISMATCH") == 3, text   # file field, section 3, verdict
+    bare = tempfile.mktemp(suffix=".bin", dir=tmpdir); open(bare, "wb").write(image)
+    rc, text = _run("fwinfo", bare)
+    assert rc == 0 and "bare Wi-Fi module image" in text and "all segment CRCs OK" in text, text
+    bad = bytearray(image); bad[0xC0] ^= 0x01
+    open(bare, "wb").write(bad)
+    rc, text = _run("fwinfo", bare)
+    assert rc == 1 and "segment 0" in text and "crc32 0x" in text and "CRC MISMATCH" in text, text
+    other = tempfile.mktemp(suffix=".txt", dir=tmpdir); open(other, "wb").write(b"hello world")
+    rc, text = _run("fwinfo", other)
+    assert rc == 1 and "neither" in text, text
+    assert ja.hui_checksum(b"\x01\x00\x00\x00\x02\x00\x00\x00") == (-3) & 0xFFFFFFFF
+    assert ja.hui_checksum(b"\x01\x00\x00\x00\x02") == (-3) & 0xFFFFFFFF, "tail bytes are zero-padded"
+    print("fwinfo OK")
 
 
 def test_scan(port):
@@ -260,6 +378,9 @@ def main():
     port = fake.start()
     test_scan(port)
     test_fwstatus()
+    test_fwhandlers()
+    test_fwprepare()
+    test_fwinfo()
     test_fwflash()
 
     # --- unit checks ---------------------------------------------------------

@@ -33,6 +33,7 @@ import sys
 import threading
 import time
 import urllib.request
+import zlib
 
 PORT = 10025
 SSDP_GROUP = ("239.255.255.250", 1900)
@@ -761,35 +762,156 @@ BL_VALIDATION = {0: "file accepted", 1: "file accepted", 2: "file invalid for th
                  4: "file invalid", 5: "file invalid", 999: "no upload received", 1000: "not ready yet"}
 
 
-def bootloader_poll(ip, poll_status, timeout=6.0, handler="aformNetFwHandler"):
-    """POST pollStatus=N to an update handler and split the reply into its fields."""
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    req = urllib.request.Request(f"http://{ip}/goform/{handler}",
-                                 data=f"pollStatus={poll_status}".encode("ascii"),
+# what each handler's reply kinds mean (the page script's fwProgStatus / flashprogStatus tables)
+BL_HANDLERS = {
+    "aformNetFwHandler": {"1": ("transfer", BL_FW_PROGRESS), "2": ("validation", None),
+                          "3": ("confirm", None), "4": ("flash", BL_FLASH_PROGRESS)},
+    "aformFwUpdateProgessHandler": {"1": ("transfer", BL_FW_PROGRESS), "2": ("flash", BL_FLASH_PROGRESS)},
+}
+# handlers that only report and change nothing, so they are safe to probe with a bare request
+BL_SAFE_HANDLERS = ["aformNetFwHandler", "aformFwUpdateProgessHandler", "aformHandlerObtainConnStatus",
+                    "aformHandlerObtainUsbBcdList", "aformHandlerRefreshPage"]
+# every handler name compiled into the module firmware; the rest act on the device (restart, erase,
+# Wi-Fi profile, access point, Spotify) and are deliberately not probed by default
+BL_ALL_HANDLERS = BL_SAFE_HANDLERS + [
+    "aformNetFwUpdateHandler", "aformHandlerSetNetFwUpdate", "aformHandlerRestartNotify",
+    "aformHandlerObtainInternetFwUpStatus", "aformHandlerObtainUsbFwUpStatus", "aformHandlerRestartNetworkSettings",
+    "aformHandlerConfigureProfileSettings", "aformHandlerConfigureJbAp", "aformHandlerConfigureSSIDList",
+    "aformHandlerConfigureStandByMode", "aformHandlerConfigureDMPName", "aformHandlerTestHandler",
+    "aformHandlerSpotifyChangeName", "aformHandlerSpotifySwitchUser", "aformHandlerSpotifyLoginUser",
+    "aformHandlerSpotifyLogOutUser", "aformHandlerSpotifyDeleteUser"]
+
+
+def _opener():
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def bootloader_post(ip, handler, body, timeout=6.0):
+    """POST a form body to a goform handler. Returns (HTTP status, first 400 characters of the reply)."""
+    req = urllib.request.Request(f"http://{ip}/goform/{handler}", data=body.encode("ascii"),
                                  headers={"Content-Type": "application/x-www-form-urlencoded"})
-    with opener.open(req, timeout=timeout) as r:
-        text = r.read().decode("utf-8", "replace").strip()
-    parts = text.split(BL_SEP)
-    fields = {}
+    try:
+        with _opener().open(req, timeout=timeout) as r:
+            return r.status, r.read(400).decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read(400).decode("utf-8", "replace")
+
+
+def bootloader_get(ip, handler, timeout=6.0):
+    """GET a goform handler with no parameters. GoAhead answers an unknown name with a page saying
+    'Form <name> is not defined'; a known handler runs with empty arguments and answers something else."""
+    try:
+        with _opener().open(f"http://{ip}/goform/{handler}", timeout=timeout) as r:
+            return r.status, r.read(400).decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read(400).decode("utf-8", "replace")
+
+
+def parse_bootloader_reply(text):
+    """Split a goform reply into {type, flags, kind, data[]}; {} if it is not in the page's format."""
+    parts = text.strip().split(BL_SEP)
     if len(parts) >= 3 and parts[-1] == BL_END and parts[0].strip().isdigit():
         flags = int(parts[1]) if parts[1].strip().isdigit() else 0
-        fields = {"type": parts[0], "flags": flags, "kind": parts[2] if flags >= 1 else "",
-                 "data": parts[2 + flags].split(BL_FIELD_SEP) if len(parts) > 2 + flags else []}
-    return text, fields
+        return {"type": parts[0], "flags": flags, "kind": parts[2] if flags >= 1 else "",
+                "data": parts[2 + flags].split(BL_FIELD_SEP) if len(parts) > 2 + flags else []}
+    return {}
+
+
+def bootloader_poll(ip, poll_status, timeout=6.0, handler="aformNetFwHandler"):
+    """POST pollStatus=N to an update handler and split the reply into its fields."""
+    _code, text = bootloader_post(ip, handler, f"pollStatus={poll_status}", timeout)
+    text = text.strip()
+    return text, parse_bootloader_reply(text)
+
+
+def describe_poll(handler, f):
+    """One line of meaning for a decoded poll reply."""
+    if not f:
+        return "reply not in the update page's format"
+    what, table = BL_HANDLERS.get(handler, {}).get(f["kind"], (f"reply kind {f['kind']}", None))
+    d = f["data"]
+    if what == "validation":
+        code = int(d[0]) if d and d[0].strip().lstrip("-").isdigit() else None
+        s = f"validation: {BL_VALIDATION.get(code, d[0] if d else '?')}"
+        if len(d) > 1 and d[1]:
+            s += f"; current firmware {d[1]}"
+        if len(d) > 2 and d[2]:
+            s += f"; uploaded firmware {d[2]}"
+        return s
+    if table is not None:
+        return f"{what} state: {_bl_state(d, table)}"
+    return f"{what}: {d}"
+
+
+HUI_SECTION_NAMES = {0: "main-board MCU firmware (PIC32)", 1: "Bluetooth firmware (CSR BlueCore, DFU)",
+                     2: "Wi-Fi module application (JukeBlox, bCoD image)", 3: "DSP program"}
+
+
+def hui_checksum(data):
+    """The container's 32-bit checksum: the two's-complement negative of the sum of all little-endian 32-bit
+    words (data zero-padded to a multiple of four), so that sum(words) + checksum == 0 mod 2**32.
+    Verified against all four sections and the whole-file field of a genuine JBL_L16.HUI."""
+    data = bytes(data)
+    if len(data) % 4:
+        data += b"\0" * (4 - len(data) % 4)
+    return (-sum(struct.unpack(f"<{len(data) // 4}I", data))) & 0xFFFFFFFF
+
+
+def hui_header(data):
+    """Parse the 0x30-byte container header. Returns None if this is not a HUI file."""
+    if data[:4] != b"HUI " or len(data) < 0x30:
+        return None
+    v0, v1, v2, v3 = data[4:8]
+    nsec, table_off, total, csum = struct.unpack_from("<IIII", data, 8)
+    tag = data[0x20:0x30].split(b"\0")[0].decode("ascii", "replace")
+    # the file checksum covers the whole file with its own field taken as zero
+    whole = (hui_checksum(data) + csum) & 0xFFFFFFFF
+    return {"version": f"{v3}.{v2}.{v1}.{v0}", "sections": nsec, "table_offset": table_off, "size": total,
+            "size_ok": total == len(data), "checksum": csum, "checksum_ok": whole == csum, "product": tag}
+
+
+def hui_parse(data):
+    """Split a HUI container into its sections. Returns None if the data is not a container."""
+    hdr = hui_header(data)
+    if hdr is None:
+        return None
+    secs = []
+    for i in range(hdr["sections"]):
+        sid, v0, v1, v2, v3, off, size, crc = struct.unpack_from("<I4BIII", data, hdr["table_offset"] + i * 32)
+        blob = data[off:off + size]
+        secs.append({"id": sid, "version": f"{v3}.{v2}.{v1}.{v0}", "offset": off, "size": size,
+                     "crc": crc, "data": blob, "ok": len(blob) == size and hui_checksum(blob) == crc})
+    return secs
 
 
 def hui_sections(path):
     """Read a Harman .HUI container. Returns (whole file, [sections] or None if not a container)."""
     data = open(path, "rb").read()
-    if data[:4] != b"HUI ":
-        return data, None
-    nsec, table_off = struct.unpack("<II", data[8:16])
-    secs = []
-    for i in range(nsec):
-        sid, v0, v1, v2, v3, off, size, crc = struct.unpack_from("<I4BIII", data, table_off + i * 32)
-        secs.append({"id": sid, "version": f"{v3}.{v2}.{v1}.{v0}", "offset": off, "size": size,
-                     "crc": crc, "data": data[off:off + size]})
-    return data, secs
+    return data, hui_parse(data)
+
+
+def bcod_info(blob):
+    """Summarise a JukeBlox 'bCoD' module image (what the SDK calls a .bcd file): build stamp and the
+    segment table at 0x30 (data offset, load address, size, CRC-32, flags per 32-byte entry). The segments
+    chain from 0xB8, right after the 'DMP 3.x' marker, to the 0xFF padding at the end. Each segment's CRC is
+    a standard CRC-32 (zlib.crc32) of its bytes, verified on the genuine L16 image."""
+    if blob[:4] != b"bCoD" or len(blob) < 0xB8:
+        return None
+    info = {"format_version": struct.unpack_from("<I", blob, 4)[0],
+            "build": blob[8:24].decode("ascii", "replace").strip(),
+            "marker": blob[0xB0:0xB8].split(b"\0")[0].decode("ascii", "replace"), "segments": []}
+    expect = 0xB8
+    for off in range(0x30, 0xB0, 0x20):
+        data_off, load_addr, size, crc, flags = struct.unpack_from("<IIIII", blob, off)
+        if data_off != expect or size == 0 or data_off + size > len(blob):
+            break
+        seg = blob[data_off:data_off + size]
+        info["segments"].append({"offset": data_off, "load_address": load_addr, "size": size, "crc": crc,
+                                 "flags": flags, "ok": (zlib.crc32(seg) & 0xFFFFFFFF) == crc})
+        expect = data_off + size
+    info["padding"] = len(blob) - expect
+    info["ok"] = bool(info["segments"]) and all(g["ok"] for g in info["segments"])
+    return info
 
 
 def bootloader_upload(ip, blob, filename, timeout=600.0):
@@ -879,7 +1001,8 @@ def cmd_fwflash(args, _spk=None):
             return 2
         blob = sec["data"]
         print(f"container {os.path.basename(args.file)}: using section {sec['id']} "
-              f"(version {sec['version']}, {len(blob)} bytes, magic {blob[:4]!r})")
+              f"(version {sec['version']}, {len(blob)} bytes, magic {blob[:4]!r}, "
+              f"checksum {'OK' if sec['ok'] else 'MISMATCH - this copy of the file may be damaged'})")
     else:
         blob = data
         print(f"uploading {os.path.basename(args.file)} as-is ({len(blob)} bytes, magic {blob[:4]!r})")
@@ -1005,36 +1128,135 @@ def cmd_fwflash(args, _spk=None):
 
 
 def cmd_fwstatus(args, _spk=None):
-    """Read the update state machine of the bootloader page without uploading anything."""
+    """Read the update state machine of the bootloader page without uploading anything.
+    With --watch it keeps polling and prints a line whenever something changes."""
     ip = args.address
-    rc = 1
-    for poll in (1, 2):
+    handlers = args.handler or list(BL_HANDLERS)
+    polls = args.poll or [1, 2]
+    last, rc = {}, 1
+    started = time.monotonic()
+    while True:
+        stamp = time.strftime("%H:%M:%S")
+        for h in handlers:
+            for poll in polls:
+                try:
+                    text, f = bootloader_poll(ip, poll, args.timeout, handler=h)
+                except Exception as exc:  # noqa: BLE001
+                    text, f, meaning = "", {}, f"{type(exc).__name__}: {exc}"
+                else:
+                    meaning = describe_poll(h, f)
+                    if f:
+                        rc = 0
+                if args.watch is None:
+                    print(f"{h} pollStatus={poll}  raw={text!r}")
+                    print(f"  {meaning}")
+                elif last.get((h, poll)) != meaning:
+                    print(f"{stamp}  {h} pollStatus={poll}: {meaning}", flush=True)
+                    last[(h, poll)] = meaning
+        if args.watch is None or (args.duration and time.monotonic() - started >= args.duration):
+            return rc
         try:
-            text, f = bootloader_poll(ip, poll, args.timeout)
+            time.sleep(args.watch)
+        except KeyboardInterrupt:
+            return rc
+
+
+def cmd_fwinfo(args, _spk=None):
+    """Describe a firmware file and verify its checksums, without touching any speaker."""
+    import os
+    data = open(args.file, "rb").read()
+    hdr = hui_header(data)
+    if hdr is None:
+        info = bcod_info(data)
+        if info is None:
+            print(f"{args.file}: neither a HUI container nor a bCoD module image ({len(data)} bytes, starts {data[:4]!r})")
+            return 1
+        print(f"{os.path.basename(args.file)}: bare Wi-Fi module image, {len(data)} bytes")
+        _print_bcod(info, "  ")
+        print("all segment CRCs OK: this image is intact" if info["ok"] else "CRC MISMATCH: this image is damaged or truncated")
+        return 0 if info["ok"] else 1
+    print(f"{os.path.basename(args.file)}: HUI container for {hdr['product']}, version {hdr['version']}, {len(data)} bytes")
+    print(f"  size field {hdr['size']} {'OK' if hdr['size_ok'] else 'MISMATCH'}; "
+          f"file checksum {hdr['checksum']:#010x} {'OK' if hdr['checksum_ok'] else 'MISMATCH'}")
+    secs = hui_parse(data)
+    good = hdr["size_ok"] and hdr["checksum_ok"]
+    for s in secs:
+        print(f"  section {s['id']}: version bytes {s['version']}, offset {s['offset']:#x}, {s['size']} bytes, "
+              f"checksum {s['crc']:#010x} {'OK' if s['ok'] else 'MISMATCH'}  - {HUI_SECTION_NAMES.get(s['id'], '')}")
+        good = good and s["ok"]
+        info = bcod_info(s["data"])
+        if info:
+            _print_bcod(info, "      ")
+            good = good and info["ok"]
+    print("all checksums OK: this copy of the file is intact" if good
+          else "CHECKSUM MISMATCH: this copy is damaged or truncated; get another copy before using it")
+    return 0 if good else 1
+
+
+def _print_bcod(info, pad):
+    print(f"{pad}bCoD image: format {info['format_version']}, build {info['build']}, marker {info['marker']!r}, "
+          f"{len(info['segments'])} segment(s), {info['padding']} bytes of padding")
+    for i, g in enumerate(info["segments"]):
+        print(f"{pad}  segment {i}: offset {g['offset']:#x}, {g['size']} bytes, load address {g['load_address']:#010x}, "
+              f"crc32 {g['crc']:#010x} {'OK' if g['ok'] else 'MISMATCH'}, flags {g['flags']:#x}")
+
+
+def cmd_fwhandlers(args, _spk=None):
+    """Find out which goform handlers the running web server has. Only the read-only ones are tried unless
+    names are given: a bare request still runs the handler, and the others restart, erase or reconfigure."""
+    names = args.names or BL_SAFE_HANDLERS
+    present = 0
+    for name in names:
+        try:
+            code, body = bootloader_get(args.address, name, args.timeout)
         except Exception as exc:  # noqa: BLE001
-            print(f"pollStatus={poll}: {exc}")
+            print(f"{name}: {type(exc).__name__}: {exc}")
             continue
-        print(f"pollStatus={poll}  raw={text!r}")
-        if not f:
-            continue
-        rc = 0
-        d = f["data"]
-        if f["kind"] == "1" and d:
-            state = BL_FW_PROGRESS[int(d[0])] if d[0].isdigit() and int(d[0]) < len(BL_FW_PROGRESS) else d[0]
-            print(f"  transfer state: {state}" + (f", {d[1]}%" if len(d) > 1 else ""))
-        elif f["kind"] == "2" and d:
-            code = int(d[0]) if d[0].strip().lstrip("-").isdigit() else None
-            print(f"  validation: {BL_VALIDATION.get(code, d[0])}")
-            if len(d) > 1 and d[1]:
-                print(f"  current firmware: {d[1]}")
-            if len(d) > 2 and d[2]:
-                print(f"  uploaded firmware: {d[2]}")
-        elif f["kind"] == "4" and d:
-            state = BL_FLASH_PROGRESS[int(d[0])] if d[0].isdigit() and int(d[0]) < len(BL_FLASH_PROGRESS) else d[0]
-            print(f"  flash state: {state}" + (f", {d[1]}%" if len(d) > 1 else ""))
+        if "is not defined" in body:
+            print(f"{name}: not present")
         else:
-            print(f"  fields: {f}")
-    return rc
+            present += 1
+            print(f"{name}: present  (HTTP {code}, reply {body.strip()[:80]!r})")
+    return 0 if present else 1
+
+
+def cmd_fwprepare(args, _spk=None):
+    """EXPERIMENTAL. Send the 'get ready for a network firmware update' request that the module's full
+    firmware page sends before it restarts into the bootloader."""
+    ip = args.address
+    print("This sends aformHandlerSetNetFwUpdate with readyStatus=0. The full firmware uses it to prepare for\n"
+          "an upload and restart into the bootloader; what the bootloader itself does with it is unknown: it may\n"
+          "reset the update state, erase the application area, restart the module, or ignore it.\n"
+          "Use it only after both the USB-stick update and the plain upload have failed.")
+    if not args.yes and input("send it? [y/N] ").strip().lower() != "y":
+        return 1
+    try:
+        code, body = bootloader_post(ip, "aformHandlerSetNetFwUpdate", "readyStatus=0", args.timeout)
+    except Exception as exc:  # noqa: BLE001
+        print(f"request failed: {type(exc).__name__}: {exc}")
+        return 1
+    print(f"HTTP {code}: {body.strip()!r}")
+    if "is not defined" in body:
+        print("the running web server does not have this handler")
+        return 1
+    # the full firmware's page then polls aformNetFwHandler with pollStatus=0 until the reply type is 7
+    for _ in range(8):
+        time.sleep(1.5)
+        try:
+            text, f = bootloader_poll(ip, 0, args.timeout)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  pollStatus=0: {type(exc).__name__}: {exc}")
+            continue
+        print(f"  pollStatus=0: raw={text!r}")
+        if f.get("type") == "7":
+            print("  the module reports that it restarted")
+            break
+    try:
+        _text, f = bootloader_poll(ip, 1, args.timeout)
+        print("state now:", describe_poll("aformNetFwHandler", f))
+    except Exception as exc:  # noqa: BLE001
+        print(f"state now: unreachable ({exc}); give the module a minute and run fwstatus")
+    return 0
 
 
 def cmd_status(args, spk):
@@ -1166,7 +1388,20 @@ def main(argv=None):
     s = sub.add_parser("probe", help="check one address: open ports and whether the control port answers")
     s.add_argument("address"); s.set_defaults(fn=cmd_probe, needs_host=False)
     s = sub.add_parser("fwstatus", help="read the firmware-update state from the speaker's web page (no upload)")
-    s.add_argument("address"); s.set_defaults(fn=cmd_fwstatus, needs_host=False)
+    s.add_argument("address")
+    s.add_argument("--handler", action="append", choices=BL_ALL_HANDLERS, help="poll only this handler (repeatable; default: both update handlers)")
+    s.add_argument("--poll", type=int, action="append", help="pollStatus value to send (repeatable; default 1 and 2)")
+    s.add_argument("--watch", type=float, metavar="SECONDS", help="keep polling every SECONDS and print only changes (Ctrl-C to stop)")
+    s.add_argument("--for", dest="duration", type=float, metavar="SECONDS", help="with --watch: stop after this long")
+    s.set_defaults(fn=cmd_fwstatus, needs_host=False)
+    s = sub.add_parser("fwinfo", help="describe a JBL_L16.HUI (or bare module image) and verify its checksums")
+    s.add_argument("file"); s.set_defaults(fn=cmd_fwinfo, needs_host=False)
+    s = sub.add_parser("fwhandlers", help="ask the speaker's web server which update handlers it has (read-only ones by default)")
+    s.add_argument("address"); s.add_argument("names", nargs="*", help="handler names to try instead of the safe list")
+    s.set_defaults(fn=cmd_fwhandlers, needs_host=False)
+    s = sub.add_parser("fwprepare", help="EXPERIMENTAL: send the full firmware's 'prepare for network update' request to the bootloader")
+    s.add_argument("address"); s.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    s.set_defaults(fn=cmd_fwprepare, needs_host=False)
     s = sub.add_parser("fwflash", help="upload a firmware image through the bootloader page and drive the update")
     s.add_argument("address"); s.add_argument("file", help="JBL_L16.HUI container (its Wi-Fi module section is used) or a raw module image")
     s.add_argument("--section", type=int, default=2, help="which container section to send (default 2, the Wi-Fi module)")

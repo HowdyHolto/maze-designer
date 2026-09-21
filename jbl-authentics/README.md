@@ -51,8 +51,12 @@ python3 jbl_authentics.py --host 192.168.1.50 raw query-status MAC_address
 python3 jbl_authentics.py --host 192.168.1.50 monitor      # print everything the speaker sends
 python3 jbl_authentics.py probe 192.168.1.50            # which ports answer at that address
 python3 jbl_authentics.py web 192.168.1.50              # save the speaker's web pages to ./speaker-web
+python3 jbl_authentics.py fwinfo JBL_L16.HUI            # describe a firmware file and verify its checksums (touches no speaker)
 python3 jbl_authentics.py fwstatus 192.168.1.50         # bootloader page: current update state, no upload
+python3 jbl_authentics.py fwstatus 192.168.1.50 --watch 30   # keep polling, print every change (watch a USB-stick update from the Mac)
+python3 jbl_authentics.py fwhandlers 192.168.1.50       # which update handlers the web server has (read-only probe)
 python3 jbl_authentics.py fwflash 192.168.1.50 JBL_L16.HUI   # bootloader page: send the Wi-Fi module image and drive the update
+python3 jbl_authentics.py fwprepare 192.168.1.50        # EXPERIMENTAL: the full firmware's "prepare for network update" request
 ```
 
 ## Try it without a speaker
@@ -96,6 +100,8 @@ or simply copy the folder and `git init` inside it.
 ## Firmware
 
 A speaker whose web page shows only "Update Your Products Firmware" is sitting in its bootloader and needs the `JBL_L16.HUI` update file. `PROTOCOL.md` sections 7b and 7c describe the bootloader page, the file's layout, and its size and hashes so you can check a copy. The file is Harman's and is not included here; ask other owners or Harman support.
+
+`fwinfo JBL_L16.HUI` verifies every section checksum and the module image's internal CRCs (both algorithms are documented in 7c), so a damaged copy is caught before it goes anywhere near the speaker. During a USB-stick update the main board pushes the module image over a slow serial link for about half an hour; `fwstatus <ip> --watch 30` in a Terminal window shows what the module's bootloader reports while that happens, and `fwstatus <ip>` right after it ends, before any power cycle, shows where it stopped.
 
 ## Legal note
 
