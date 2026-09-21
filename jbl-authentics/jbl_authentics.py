@@ -846,7 +846,7 @@ def cmd_fwflash(args, _spk=None):
         return 1
 
     result = {}
-    t = threading.Thread(target=lambda: result.update(r=bootloader_upload(ip, blob, "JBL_L16.HUI")), daemon=True)
+    t = threading.Thread(target=lambda: result.update(r=bootloader_upload(ip, blob, args.filename)), daemon=True)
     t.start()
     last = None
     while t.is_alive():
@@ -1105,6 +1105,7 @@ def main(argv=None):
     s.add_argument("--section", type=int, default=2, help="which container section to send (default 2, the Wi-Fi module)")
     s.add_argument("--whole", action="store_true", help="send the file exactly as-is")
     s.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    s.add_argument("--filename", default="JBL_L16_wifi_module.bin", help="file name presented to the bootloader in the upload")
     s.set_defaults(fn=cmd_fwflash, needs_host=False)
     s = sub.add_parser("web", help="save every page of the speaker's web server for inspection")
     s.add_argument("address"); s.add_argument("--out", default="speaker-web"); s.add_argument("--limit", type=int, default=60)
