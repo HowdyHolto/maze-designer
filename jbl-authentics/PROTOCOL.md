@@ -106,7 +106,7 @@ The shared table also carries AVR/BDS names (`play`, `pause`, `next`, `previous`
 
 ## 5. Bluetooth control channel (SPP, Android only)
 
-iOS apps cannot open Bluetooth Classic serial links without Apple's MFi program, so the iOS app almost certainly used Wi‑Fi only. The Android app opens RFCOMM with the standard SPP UUID `00001101-0000-1000-8000-00805F9B34FB` to the paired speaker whose name contains `JBL L16` / `JBL L8`, and exchanges raw frames with **no length prefix and no checksum**: `[command_id, sub_id, payload…]`. Replies start with the same `command_id`.
+iOS apps cannot open Bluetooth Classic serial links without Apple's MFi program, so the iOS app almost certainly used Wi‑Fi only (plus the MFi iAP channel for setup). A Mac can: once the speaker is paired, macOS exposes the serial‑port service as `/dev/cu.<name>`, and `jbl_bt.py` in this folder speaks the protocol below over it with nothing but the Python standard library. The main board answers on this channel whether or not the Wi‑Fi module is alive, which makes it the one control path that survives a dead module. The Android app opens RFCOMM with the standard SPP UUID `00001101-0000-1000-8000-00805F9B34FB` to the paired speaker whose name contains `JBL L16` / `JBL L8`, and exchanges raw frames with **no length prefix and no checksum**: `[command_id, sub_id, payload…]`. Replies start with the same `command_id`.
 
 | Function | Send (hex) | Reply |
 |---|---|---|

@@ -59,6 +59,21 @@ python3 jbl_authentics.py fwflash 192.168.1.50 JBL_L16.HUI   # bootloader page: 
 python3 jbl_authentics.py fwprepare 192.168.1.50        # EXPERIMENTAL: the full firmware's "prepare for network update" request
 ```
 
+## Bluetooth from the Mac (works while the Wi-Fi module is dead)
+
+The main board also answers on the Bluetooth serial channel the Android app used, and that keeps working when the network side is down. Pair the speaker in System Settings > Bluetooth (it is called "JBL L16 BT"); macOS then creates a serial device for it. Then:
+
+```bash
+python3 jbl_bt.py ports                                  # lists /dev/cu.* and marks the likely one
+python3 jbl_bt.py --port /dev/cu.JBLL16BT status         # power, volume, source, EQ mode, name, IP, versions
+python3 jbl_bt.py --port /dev/cu.JBLL16BT version        # application, bootloader and DSP versions
+python3 jbl_bt.py --port /dev/cu.JBLL16BT volume 20
+python3 jbl_bt.py --port /dev/cu.JBLL16BT source optical
+python3 jbl_bt.py --port /dev/cu.JBLL16BT raw 00 01      # any frame; prints the reply bytes
+```
+
+If `ports` shows nothing with JBL in the name after pairing, the speaker did not offer the serial-port service to the Mac; the exact device name macOS picks varies, so try each `/dev/cu.*` entry that is not the incoming port. `python3 test_bt.py` exercises the client against a fake speaker on a pseudo-terminal.
+
 ## Try it without a speaker
 
 ```bash
