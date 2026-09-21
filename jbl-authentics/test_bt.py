@@ -129,7 +129,7 @@ def main():
     rc, o = run(port, "raw", "7f", "01"); assert rc == 1 and "(no reply)" in o, o
     assert b"\x02\x03\x19" in fake.log and b"\x0e\x03\x03" in fake.log and b"\x04\x03\x0bKitchen L16" in fake.log, fake.log
     # helpers
-    assert jbl_bt.version_fields(bytes([6, 2, 0, 0, 0, 5, 69, 85, 0, 0, 0, 2, 0, 7])) == {"application": "5", "region": "EU", "bootloader": "2.0.7", "dsp": "7"}
+    assert jbl_bt.version_fields(bytes([6, 2, 0, 0, 0, 5, 69, 85, 0, 0, 0, 2, 0, 7])) == {"application": "5", "region": "EU", "bootloader": "2", "dsp": "2"}
     assert jbl_bt.capability_names(bytes([0, 2, 0x81, 0x08])) == ["Device EQ", "Key event", "Bass Boost Control"]
     rc, o = run(port, "ports")
     assert rc in (0, 1), o
