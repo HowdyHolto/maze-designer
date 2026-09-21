@@ -752,6 +752,65 @@ def cmd_web(args, _spk=None):
     return 0 if found else 1
 
 
+# -- bootloader / firmware-update page (GoAhead "goform" handlers) ------------
+BL_SEP, BL_FIELD_SEP, BL_END = "qwhgpstgriz", "zirgtspghwq", "EndRes"
+BL_FW_PROGRESS = ["idle", "started", "downloading", "download complete", "verifying image",
+                  "download update flash", "download update done", "download failed", "update failed"]
+BL_FLASH_PROGRESS = ["flashing not started", "erasing flash", "burning flash", "finished"]
+BL_VALIDATION = {0: "file accepted", 1: "file accepted", 2: "file invalid for this player", 3: "file invalid",
+                 4: "file invalid", 5: "file invalid", 999: "no upload received", 1000: "not ready yet"}
+
+
+def bootloader_poll(ip, poll_status, timeout=6.0):
+    """POST pollStatus=N to the update handler and split the reply into its fields."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    req = urllib.request.Request(f"http://{ip}/goform/aformNetFwHandler",
+                                 data=f"pollStatus={poll_status}".encode("ascii"),
+                                 headers={"Content-Type": "application/x-www-form-urlencoded"})
+    with opener.open(req, timeout=timeout) as r:
+        text = r.read().decode("utf-8", "replace").strip()
+    parts = text.split(BL_SEP)
+    fields = {}
+    if len(parts) >= 3 and parts[-1] == BL_END and parts[0].strip().isdigit():
+        flags = int(parts[1]) if parts[1].strip().isdigit() else 0
+        fields = {"type": parts[0], "flags": flags, "kind": parts[2] if flags >= 1 else "",
+                 "data": parts[2 + flags].split(BL_FIELD_SEP) if len(parts) > 2 + flags else []}
+    return text, fields
+
+
+def cmd_fwstatus(args, _spk=None):
+    """Read the update state machine of the bootloader page without uploading anything."""
+    ip = args.address
+    rc = 1
+    for poll in (1, 2):
+        try:
+            text, f = bootloader_poll(ip, poll, args.timeout)
+        except Exception as exc:  # noqa: BLE001
+            print(f"pollStatus={poll}: {exc}")
+            continue
+        print(f"pollStatus={poll}  raw={text!r}")
+        if not f:
+            continue
+        rc = 0
+        d = f["data"]
+        if f["kind"] == "1" and d:
+            state = BL_FW_PROGRESS[int(d[0])] if d[0].isdigit() and int(d[0]) < len(BL_FW_PROGRESS) else d[0]
+            print(f"  transfer state: {state}" + (f", {d[1]}%" if len(d) > 1 else ""))
+        elif f["kind"] == "2" and d:
+            code = int(d[0]) if d[0].strip().lstrip("-").isdigit() else None
+            print(f"  validation: {BL_VALIDATION.get(code, d[0])}")
+            if len(d) > 1 and d[1]:
+                print(f"  current firmware: {d[1]}")
+            if len(d) > 2 and d[2]:
+                print(f"  uploaded firmware: {d[2]}")
+        elif f["kind"] == "4" and d:
+            state = BL_FLASH_PROGRESS[int(d[0])] if d[0].isdigit() and int(d[0]) < len(BL_FLASH_PROGRESS) else d[0]
+            print(f"  flash state: {state}" + (f", {d[1]}%" if len(d) > 1 else ""))
+        else:
+            print(f"  fields: {f}")
+    return rc
+
+
 def cmd_status(args, spk):
     for what in STATUS_QUERIES:
         show(spk.query(what, timeout=2.0), what)
@@ -880,6 +939,8 @@ def main(argv=None):
     s.set_defaults(fn=cmd_discover, needs_host=False)
     s = sub.add_parser("probe", help="check one address: open ports and whether the control port answers")
     s.add_argument("address"); s.set_defaults(fn=cmd_probe, needs_host=False)
+    s = sub.add_parser("fwstatus", help="read the firmware-update state from the speaker's web page (no upload)")
+    s.add_argument("address"); s.set_defaults(fn=cmd_fwstatus, needs_host=False)
     s = sub.add_parser("web", help="save every page of the speaker's web server for inspection")
     s.add_argument("address"); s.add_argument("--out", default="speaker-web"); s.add_argument("--limit", type=int, default=60)
     s.set_defaults(fn=cmd_web, needs_host=False)

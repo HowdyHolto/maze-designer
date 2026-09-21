@@ -145,6 +145,23 @@ Methods 2 and 3 need no app at all, so new owners are never locked out by the ap
 
 ---
 
+## 7b. Bootloader web page and firmware upload over HTTP (observed on a real L16)
+
+When the JukeBlox module's main firmware is not running, port 80 serves a page titled `Bl_Index` (bootloader index) with only a "Current status / IP address" box and an "Update Your Products Firmware" form, and every other port (10025, AirPlay 5000/7000, UPnP 8080, 8889) refuses connections. Bluetooth keeps working because it is a separate chip. The server is GoAhead (`/goform/…` handlers); the page includes `images/Brand-Icon-Microchip.png` and the script `airplayRelJavScr.js`, which holds the update logic below.
+
+**Upload:** `POST /goform/aformNetFwUpdateHandler`, `multipart/form-data`, file field name `appFirmware`. The page submits it into a hidden iframe, then drives the state machine by polling.
+
+**Polling:** `POST /goform/aformNetFwHandler` with body `pollStatus=N` (`application/x-www-form-urlencoded`). Replies are text fields joined by the separator `qwhgpstgriz`: `type`, `number of flags`, the flags (the first flag is the reply kind), the data, and the literal `EndRes`. Data fields are joined by `zirgtspghwq`. A bare `GET` returns `qwhgpstgrizEndRes`.
+
+| `pollStatus` | Reply kind | Data | Meaning |
+|---|---|---|---|
+| `1` | 1 | `<state>zirgtspghwq<percent>` | transfer progress; state 0 idle, 1 started, 2 downloading, 3 download complete, 4 verifying image, 5 download update flash, 6 download update done, 7 download failed, 8 update failed. The page repeats `1` until percent is 100, then sends `2`. |
+| `2` | 2 | `<code>zirgtspghwq<CurFw>zirgtspghwq<NewFw>` | validation of the uploaded image; code 0 or 1 accepted (the page then shows "CurFw / NewFw" and asks to confirm), 2 invalid for this player, 3–5 invalid, 999 no multipart upload received, 1000 not ready, poll again |
+| `3` | 3 | `1` | confirm: start flashing |
+| `4` | 4 | `<state>zirgtspghwq<percent>` | flash progress; 0 not started, 1 erasing, 2 burning, 3 finished. On 3 the page polls `POST /goform/aformHandlerRestartNotify` with `pollStatus=0` every 1.5 s until the reply type is 7 ("System Restarted") and reloads. |
+
+`python3 jbl_authentics.py fwstatus <ip>` sends `1` and `2` and decodes the answers without uploading anything. The manual's USB procedure (file in the root of a USB stick in the top "iPad" USB port, hold Power + Source for five seconds) is the other way in, and needs the same file. The bootloader rejects images meant for another player, so an L8 image should fail validation rather than brick an L16, but do not rely on that.
+
 ## 8. Things to verify on real hardware
 
 1. Whether `power-on` / `power-off` work as `<control>` or only as a `<status>` element.

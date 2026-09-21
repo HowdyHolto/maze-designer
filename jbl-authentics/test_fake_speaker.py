@@ -130,6 +130,33 @@ def test_mdns_discovery():
     print("mDNS discovery OK")
 
 
+class _FakeBootloader(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
+        if self.path == "/goform/aformNetFwHandler" and body == "pollStatus=1":
+            out = "1qwhgpstgriz1qwhgpstgriz1qwhgpstgriz8zirgtspghwq0qwhgpstgrizEndRes\n"
+        elif self.path == "/goform/aformNetFwHandler" and body == "pollStatus=2":
+            out = "2qwhgpstgriz1qwhgpstgriz2qwhgpstgriz1000zirgtspghwq1.29zirgtspghwqqwhgpstgrizEndRes\n"
+        else:
+            out = "qwhgpstgrizEndRes"
+        data = out.encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+
+
+def test_fwstatus():
+    httpd = HTTPServer(("127.0.0.1", 0), _FakeBootloader)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = ja.main(["--timeout", "2", "fwstatus", f"127.0.0.1:{httpd.server_address[1]}"])
+    text = out.getvalue()
+    assert rc == 0 and "transfer state: update failed, 0%" in text and "validation: not ready yet" in text and "current firmware: 1.29" in text, text
+    print("fwstatus OK")
+
+
 def test_scan(port):
     assert ja.scan_subnet(hosts=["127.0.0.1"], port=port) == [("127.0.0.1", "JBL L16")]
     assert ja.probe("127.0.0.1", port=1) is None
@@ -152,6 +179,7 @@ def main():
     fake = FakeSpeaker()
     port = fake.start()
     test_scan(port)
+    test_fwstatus()
 
     # --- unit checks ---------------------------------------------------------
     body = (b'<?xml version="1.0" encoding="UTF-8"?> <harman> <mm> <common> <control> '
