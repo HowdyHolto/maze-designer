@@ -62,8 +62,8 @@ SOURCES = {
 }
 
 STATUS_QUERIES = [
-    "power", "volume", "source", "bass_level", "signal_doctor",
-    "device_name", "sys_version", "MAC_address",
+    "power", "volume", "mute", "source", "bass_level", "manual_EQ", "eq_mode",
+    "signal_doctor", "device_name", "sys_version", "MAC_address",
 ]
 
 

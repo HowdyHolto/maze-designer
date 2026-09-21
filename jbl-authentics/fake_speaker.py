@@ -63,7 +63,8 @@ class FakeSpeaker:
         if name == "query-status":
             table = {
                 "volume": str(s["volume"]), "source": s["source"], "power": s["power"],
-                "bass_level": f"{s['manual']}||unknown@{_lv(s['bass'])}{_lv(s['mid'])}{_lv(s['high'])}",
+                "bass_level": f"{s['manual']}||bass@{_lv(s['bass'])}{_lv(s['mid'])}{_lv(s['high'])}",
+                "mute": "off", "manual_EQ": s["manual"], "eq_mode": "off",
                 "signal_doctor": s["sd"], "device_name": s["name"], "sys_version": s["ver"],
                 "MAC_address": "00:11:22:33:44:55",
                 "spectrum_data": bytes([0x01, 0x00, 0x00, 0xff, 0x12, 0x34, 0x00, 0x80]),

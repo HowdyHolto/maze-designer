@@ -162,11 +162,43 @@ When the JukeBlox module's main firmware is not running, port 80 serves a page t
 
 `python3 jbl_authentics.py fwstatus <ip>` sends `1` and `2` and decodes the answers without uploading anything. The manual's USB procedure (file in the root of a USB stick in the top "iPad" USB port, hold Power + Source for five seconds) is the other way in, and needs the same file. The bootloader rejects images meant for another player, so an L8 image should fail validation rather than brick an L16, but do not rely on that.
 
+## 7c. What the firmware image confirms (from a genuine `JBL_L16.HUI`)
+
+A copy of the L16 update file was analysed (strings only, nothing executed). Identity of that copy, so other owners can check theirs:
+
+| | |
+|---|---|
+| file name | `JBL_L16.HUI` |
+| size | 7,970,172 bytes |
+| MD5 | `93cea0a58fe031feab66f76ec8f96da3` |
+| SHA-256 | `4a2d5ac70aa622e0c8996cc568bb4bbc32caa059bc94ace681d3dc8cb416f99a` |
+
+The file is not part of this repository (it is Harman's copyright). Owners who need it should ask other owners or Harman support.
+
+**Container layout.** `HUI ` magic, then at 0x08 the section count (4), at 0x0C the table offset (0x30), at 0x10 the total length, at 0x14 a 32‑bit checksum whose algorithm was not identified (plain CRC‑32, CRC‑32C, Adler and simple sums do not match), and at 0x20 the product tag `JBL_L16`. The table holds four 32‑byte entries: id, four version bytes, offset, size, checksum. Offsets and sizes chain exactly to the end of the file.
+
+| id | version bytes | size | what it is |
+|---|---|---|---|
+| 0 | 9.2.1.0 → **1.2.9** | 320 KB | main‑board MCU firmware: reads `JBL_L16.HUI` from a USB stick, drives the update, writes `JBL_L16_Version_Log.txt` to the stick, and **implements the control protocol** (all the command and status names below live here) |
+| 1 | 3.2.1.0 → 1.2.3 | 1.6 MB | CSR BlueCore Bluetooth firmware, DFU format, tagged `JBL_L16 V123` |
+| 2 | 9.7.5.9 | 5.9 MB | JukeBlox CX870 application, `APP:JB21.0-Ref/HW:JukeBlox2 (Release)`, build stamp 2013‑11‑06, ThreadX RTOS (not Linux), GoAhead web server, Twonky DLNA, AirPlay (`_raop._tcp`, `_dacp._tcp`), Spotify handlers, Mocana SSL |
+| 3 | 9.1.0.0 | 94 KB | no readable strings; most likely the DSP program |
+
+The header version 1.2.9 is what the app's `sys_version` query reports as `129`, which is the version at which the JBL Music app hides the Clari‑Fi level slider (it shows it again from 2.0.0).
+
+**Architecture.** The Wi‑Fi module only tunnels port 10025; the MCU parses the XML (`Tunnel_Data_Value.Name` / `Para` in its logs) and answers. Status messages the speaker sends are framed like the requests: `POST MM HTTP/1.1`, `Host: :10025`, `User-Agent: JBL_Authentics/0121`, `Content-Length`, blank line, then the `<status>` XML, which is why the app looked for the line starting with `<?xml`.
+
+**Vocabulary confirmed in the MCU firmware.** Commands: `power-on`, `power-off`, `power-toggle`, `source-selection`, `volume-up`, `volume-down`, `mute-on`, `mute-off`, `mute-toggle`, `query-status`, `set_system_volume`, `set_bass_level`, `set_mid_level`, `set_high_level`, `set_EQ_mode` (note the capitals), `set_device_name`, `set_manual_mode`, `signal_doctor_control`, `heart-alive`, `bye-bye`. Query parameters: `power`, `volume`, `mute`, `source`, `playback`, `device_name`, `MAC_address`, `manual_EQ` (lower‑case m, unlike the app), `signal_doctor`, `bass_level`, `mid_level`, `high_level`, `eq_mode`, `sys_version`, `spectrum_data`. Source names as reported: `Airplay`, `Bluetooth`, `OPTICAL1`, `Phono`/`phono`, `Dlna`/`dlna`; the aux input is logged as "aux in" and selected with `AUX` as the app does.
+
+**Tone reply format.** The MCU formats `bass_level` replies as `on||bass@…`, `on||mid@…`, `on||high@…` (also `||treble@` for the L8), so the field the app ignored between `||` and `@` is simply the name of the band that changed, followed by the three level characters.
+
+**Flashing.** The bootloader page (7b) takes this file as‑is. The USB route is the MCU's job: the file in the root of a FAT‑formatted stick in the top ("iPad") USB port, then Power + Source held for five seconds; the MCU logs the result to the stick.
+
 ## 8. Things to verify on real hardware
 
 1. Whether `power-on` / `power-off` work as `<control>` or only as a `<status>` element.
 2. The exact framing of replies (header line before the XML or not) and whether the speaker ever pushes unsolicited status when a physical knob or button is used (`monitor` in the reference client).
-3. The unknown field between `||` and `@` in `bass_level`.
+3. The exact `bass_level` reply on the L16 (the firmware suggests `on||bass@<b><m><h>`).
 4. Band count and scaling of `spectrum_data`.
 5. Whether `mute-on/off/toggle`, `MAC_address`, `Manual_EQ` and the AVR‑style transport commands are accepted.
 6. The UPnP `description.xml` contents (`friendlyName`, `modelName`, `modelDescription`), which the app relies on for identification.
