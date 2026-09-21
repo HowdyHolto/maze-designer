@@ -161,10 +161,10 @@ class _FakeBootloaderFlash(BaseHTTPRequestHandler):
         body = self.rfile.read(n)
         st = _FakeBootloaderFlash.state
         if self.path == "/goform/aformNetFwUpdateHandler":
-            marker = b"\r\n\r\n"
-            payload = body[body.index(marker) + 4:]
-            payload = payload[:payload.rindex(b"\r\n--")]
-            st["uploaded"] = payload
+            boundary = self.headers.get("Content-Type", "").split("boundary=")[1].encode()
+            first = body.index(b"\r\n\r\n") + 4
+            end = body.index(b"\r\n--" + boundary, first)
+            st["uploaded"] = body[first:end]
             return self._reply("ok")
         if self.path == "/goform/aformHandlerRestartNotify":
             return self._reply("7qwhgpstgriz1qwhgpstgriz0qwhgpstgrizEndRes" if st["restarted"] else "8qwhgpstgriz1qwhgpstgriz0qwhgpstgrizEndRes")
