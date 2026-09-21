@@ -146,6 +146,84 @@ class _FakeBootloader(BaseHTTPRequestHandler):
         self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
 
 
+class _FakeBootloaderFlash(BaseHTTPRequestHandler):
+    state = {"uploaded": None, "flash": 0, "restarted": False}
+
+    def log_message(self, *a):
+        pass
+
+    def _reply(self, text):
+        data = text.encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n)
+        st = _FakeBootloaderFlash.state
+        if self.path == "/goform/aformNetFwUpdateHandler":
+            marker = b"\r\n\r\n"
+            payload = body[body.index(marker) + 4:]
+            payload = payload[:payload.rindex(b"\r\n--")]
+            st["uploaded"] = payload
+            return self._reply("ok")
+        if self.path == "/goform/aformHandlerRestartNotify":
+            return self._reply("7qwhgpstgriz1qwhgpstgriz0qwhgpstgrizEndRes" if st["restarted"] else "8qwhgpstgriz1qwhgpstgriz0qwhgpstgrizEndRes")
+        p = body.decode()
+        if p == "pollStatus=1":
+            return self._reply("8qwhgpstgriz1qwhgpstgriz1qwhgpstgriz3zirgtspghwq100qwhgpstgrizEndRes" if st["uploaded"]
+                               else "8qwhgpstgriz1qwhgpstgriz1qwhgpstgrizFirmware Update not startedzirgtspghwq0qwhgpstgrizEndRes")
+        if p == "pollStatus=2":
+            if not st["uploaded"]:
+                return self._reply("8qwhgpstgriz1qwhgpstgriz2qwhgpstgriz999zirgtspghwqzirgtspghwqqwhgpstgrizEndRes")
+            ok = st["uploaded"][:4] == b"bCoD"
+            return self._reply(f"8qwhgpstgriz1qwhgpstgriz2qwhgpstgriz{0 if ok else 2}zirgtspghwqs.237.149zirgtspghwqs9.7.5.9qwhgpstgrizEndRes")
+        if p == "pollStatus=3":
+            st["flash"] = 1
+            return self._reply("8qwhgpstgriz1qwhgpstgriz3qwhgpstgriz1qwhgpstgrizEndRes")
+        if p == "pollStatus=4":
+            st["flash"] = min(3, st["flash"] + 1)
+            if st["flash"] == 3:
+                st["restarted"] = True
+            return self._reply(f"8qwhgpstgriz1qwhgpstgriz4qwhgpstgriz{st['flash']}zirgtspghwq{st['flash'] * 33}qwhgpstgrizEndRes")
+        return self._reply("qwhgpstgrizEndRes")
+
+
+def test_fwflash(tmpdir="/tmp"):
+    import struct, tempfile
+    # build a small fake container: 3 sections, section 2 starts with the module magic
+    secs = [b"MCU" * 100, b"CSR-dfu2" + b"\x00" * 50, b"bCoD" + b"\x01\x00\x00\x00" + b"20131106051708  " + b"\xff" * 3000]
+    table_off, n = 0x30, len(secs)
+    body_off = table_off + n * 32
+    table, blobs, off = b"", b"", body_off
+    for i, blob in enumerate(secs):
+        table += struct.pack("<I4BIII", i, 9, 2, 1, 0, off, len(blob), 0) + b"\x00" * 12
+        blobs += blob; off += len(blob)
+    hdr = b"HUI " + bytes([9, 2, 1, 0]) + struct.pack("<IIII", n, table_off, body_off + len(blobs), 0) + b"\x00" * 8 + b"JBL_L16" + b"\x00" * 9
+    container = hdr + table + blobs
+    assert len(hdr) == table_off
+    path = tempfile.mktemp(suffix=".HUI", dir=tmpdir)
+    open(path, "wb").write(container)
+    _data, parsed = ja.hui_sections(path)
+    assert [x["id"] for x in parsed] == [0, 1, 2] and parsed[2]["data"][:4] == b"bCoD" and parsed[0]["version"] == "0.1.2.9"
+
+    httpd = HTTPServer(("127.0.0.1", 0), _FakeBootloaderFlash)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    addr = f"127.0.0.1:{httpd.server_address[1]}"
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = ja.main(["--timeout", "2", "fwflash", addr, path, "--yes"])
+    text = out.getvalue()
+    assert rc == 0 and "validation passed" in text and "new firmware: s9.7.5.9" in text and "flash: finished" in text and "has restarted" in text, text
+    assert _FakeBootloaderFlash.state["uploaded"] == secs[2]
+    # wrong section is rejected by validation, never flashed
+    _FakeBootloaderFlash.state.update(uploaded=None, flash=0, restarted=False)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = ja.main(["--timeout", "2", "fwflash", addr, path, "--section", "0", "--yes"])
+    assert rc == 1 and "invalid for this player" in out.getvalue(), out.getvalue()
+    print("fwflash OK")
+
+
 def test_fwstatus():
     httpd = HTTPServer(("127.0.0.1", 0), _FakeBootloader)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -180,6 +258,7 @@ def main():
     port = fake.start()
     test_scan(port)
     test_fwstatus()
+    test_fwflash()
 
     # --- unit checks ---------------------------------------------------------
     body = (b'<?xml version="1.0" encoding="UTF-8"?> <harman> <mm> <common> <control> '

@@ -200,7 +200,7 @@ The header version 1.2.9 is what the app's `sys_version` query reports as `129`,
 
 **Tone reply format.** The MCU formats `bass_level` replies as `on||bass@…`, `on||mid@…`, `on||high@…` (also `||treble@` for the L8), so the field the app ignored between `||` and `@` is simply the name of the band that changed, followed by the three level characters.
 
-**Flashing.** The bootloader page (7b) takes this file as‑is. The USB route is the MCU's job: the file in the root of a FAT‑formatted stick in the top ("iPad") USB port, then Power + Source held for five seconds; the MCU logs the result to the stick.
+**Flashing.** The bootloader page (7b) belongs to the Wi‑Fi module and wants the module's own image, which is section 2 of the container: it starts with the magic `bCoD`, a 32‑bit 1, the build stamp `20131106051708`, and is padded with 0xFF to exactly 0x5A8000 bytes (the module's application flash region). Uploading the whole 8 MB container there ends in "download failed"; `python3 jbl_authentics.py fwflash <ip> JBL_L16.HUI` extracts section 2 and drives the upload, validation, confirm and flash sequence, and a browser can do the same with the extracted section as the file. The USB route is the MCU's job: the file in the root of a FAT‑formatted stick in the top ("iPad") USB port, then Power + Source held for five seconds; the MCU logs the result to the stick.
 
 ## 8. Things to verify on real hardware
 

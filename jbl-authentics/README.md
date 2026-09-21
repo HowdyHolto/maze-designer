@@ -52,6 +52,7 @@ python3 jbl_authentics.py --host 192.168.1.50 monitor      # print everything th
 python3 jbl_authentics.py probe 192.168.1.50            # which ports answer at that address
 python3 jbl_authentics.py web 192.168.1.50              # save the speaker's web pages to ./speaker-web
 python3 jbl_authentics.py fwstatus 192.168.1.50         # bootloader page: current update state, no upload
+python3 jbl_authentics.py fwflash 192.168.1.50 JBL_L16.HUI   # bootloader page: send the Wi-Fi module image and drive the update
 ```
 
 ## Try it without a speaker

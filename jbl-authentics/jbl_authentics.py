@@ -761,10 +761,10 @@ BL_VALIDATION = {0: "file accepted", 1: "file accepted", 2: "file invalid for th
                  4: "file invalid", 5: "file invalid", 999: "no upload received", 1000: "not ready yet"}
 
 
-def bootloader_poll(ip, poll_status, timeout=6.0):
-    """POST pollStatus=N to the update handler and split the reply into its fields."""
+def bootloader_poll(ip, poll_status, timeout=6.0, handler="aformNetFwHandler"):
+    """POST pollStatus=N to an update handler and split the reply into its fields."""
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    req = urllib.request.Request(f"http://{ip}/goform/aformNetFwHandler",
+    req = urllib.request.Request(f"http://{ip}/goform/{handler}",
                                  data=f"pollStatus={poll_status}".encode("ascii"),
                                  headers={"Content-Type": "application/x-www-form-urlencoded"})
     with opener.open(req, timeout=timeout) as r:
@@ -776,6 +776,165 @@ def bootloader_poll(ip, poll_status, timeout=6.0):
         fields = {"type": parts[0], "flags": flags, "kind": parts[2] if flags >= 1 else "",
                  "data": parts[2 + flags].split(BL_FIELD_SEP) if len(parts) > 2 + flags else []}
     return text, fields
+
+
+def hui_sections(path):
+    """Read a Harman .HUI container. Returns (whole file, [sections] or None if not a container)."""
+    data = open(path, "rb").read()
+    if data[:4] != b"HUI ":
+        return data, None
+    nsec, table_off = struct.unpack("<II", data[8:16])
+    secs = []
+    for i in range(nsec):
+        sid, v0, v1, v2, v3, off, size, crc = struct.unpack_from("<I4BIII", data, table_off + i * 32)
+        secs.append({"id": sid, "version": f"{v3}.{v2}.{v1}.{v0}", "offset": off, "size": size,
+                     "crc": crc, "data": data[off:off + size]})
+    return data, secs
+
+
+def bootloader_upload(ip, blob, filename, timeout=600.0):
+    """Multipart upload to the bootloader page's handler, exactly as its own form does it."""
+    boundary = "----JBLAuthenticsUpload%08x" % (int(time.time()) & 0xffffffff)
+    head = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"appFirmware\"; filename=\"{filename}\"\r\n"
+            f"Content-Type: application/octet-stream\r\n\r\n").encode("ascii")
+    tail = f"\r\n--{boundary}--\r\n".encode("ascii")
+    req = urllib.request.Request(f"http://{ip}/goform/aformNetFwUpdateHandler", data=head + blob + tail,
+                                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            return r.status, r.read(300).decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read(300).decode("utf-8", "replace")
+    except Exception as exc:  # noqa: BLE001 - the bootloader may just drop the connection
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+def _bl_state(d, table):
+    if not d:
+        return "?"
+    name = table[int(d[0])] if d[0].isdigit() and int(d[0]) < len(table) else d[0]
+    return name + (f", {d[1]}%" if len(d) > 1 and d[1] else "")
+
+
+def cmd_fwflash(args, _spk=None):
+    """Drive the bootloader page's whole update sequence from the command line."""
+    import os
+    ip = args.address
+    data, secs = hui_sections(args.file)
+    if secs is not None and not args.whole:
+        sec = next((x for x in secs if x["id"] == args.section), None)
+        if sec is None:
+            print(f"no section {args.section} in this container; it has {[x['id'] for x in secs]}")
+            return 2
+        blob = sec["data"]
+        print(f"container {os.path.basename(args.file)}: using section {sec['id']} "
+              f"(version {sec['version']}, {len(blob)} bytes, magic {blob[:4]!r})")
+    else:
+        blob = data
+        print(f"uploading {os.path.basename(args.file)} as-is ({len(blob)} bytes, magic {blob[:4]!r})")
+    if blob[:4] != b"bCoD":
+        print("warning: this does not start with the Wi-Fi module image magic 'bCoD'; the bootloader will "
+              "probably reject it, which is safe, but check that you picked the right file or section")
+    try:
+        _text, f = bootloader_poll(ip, 1, args.timeout)
+        print("bootloader state before upload:", _bl_state(f.get("data", []), BL_FW_PROGRESS))
+    except Exception as exc:  # noqa: BLE001
+        print(f"cannot reach the bootloader page at {ip}: {exc}")
+        return 1
+    if not args.yes and input("upload now? [y/N] ").strip().lower() != "y":
+        return 1
+
+    result = {}
+    t = threading.Thread(target=lambda: result.update(r=bootloader_upload(ip, blob, "JBL_L16.HUI")), daemon=True)
+    t.start()
+    last = None
+    while t.is_alive():
+        t.join(1.0)
+        try:
+            _text, f = bootloader_poll(ip, 1, 4.0)
+        except Exception:  # noqa: BLE001
+            continue
+        d = f.get("data", [])
+        if d != last:
+            print("  transfer:", _bl_state(d, BL_FW_PROGRESS))
+            last = d
+    print("upload response:", result.get("r"))
+
+    deadline = time.monotonic() + 180
+    d = []
+    while time.monotonic() < deadline:
+        try:
+            _text, f = bootloader_poll(ip, 1, args.timeout)
+        except Exception:  # noqa: BLE001
+            time.sleep(1)
+            continue
+        d = f.get("data", [])
+        if d != last:
+            print("  transfer:", _bl_state(d, BL_FW_PROGRESS))
+            last = d
+        if d and d[0] in ("7", "8"):
+            print("the bootloader reports the transfer failed")
+            return 1
+        if d and (d[0] in ("3", "4", "5", "6") or (len(d) > 1 and d[1] == "100")):
+            break
+        time.sleep(1)
+
+    code, d = None, []
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        try:
+            text, f = bootloader_poll(ip, 2, args.timeout)
+        except Exception:  # noqa: BLE001
+            time.sleep(1.5)
+            continue
+        d = f.get("data", [])
+        code = int(d[0]) if d and d[0].lstrip("-").isdigit() else None
+        if code == 1000:
+            time.sleep(1.5)
+            continue
+        break
+    if code not in (0, 1):
+        print("validation:", BL_VALIDATION.get(code, f"unexpected reply {d}"))
+        return 1
+    print(f"validation passed. current firmware: {d[1] if len(d) > 1 else '?'}   "
+          f"new firmware: {d[2] if len(d) > 2 else '?'}")
+    if not args.yes and input("flash it now? [y/N] ").strip().lower() != "y":
+        return 1
+    text, f = bootloader_poll(ip, 3, args.timeout)
+    if not f.get("data") or f["data"][0] != "1":
+        print("the bootloader did not start flashing:", text)
+        return 1
+    print("flashing... do not power off the speaker")
+    deadline = time.monotonic() + 900
+    last = None
+    while time.monotonic() < deadline:
+        try:
+            _text, f = bootloader_poll(ip, 4, args.timeout)
+        except Exception:  # noqa: BLE001
+            time.sleep(2)
+            continue
+        d = f.get("data", [])
+        if d != last:
+            print("  flash:", _bl_state(d, BL_FLASH_PROGRESS))
+            last = d
+        if d and d[0] == "3":
+            break
+        time.sleep(2)
+    print("waiting for the module to restart...")
+    deadline = time.monotonic() + 240
+    while time.monotonic() < deadline:
+        try:
+            _text, f = bootloader_poll(ip, 0, 5.0, handler="aformHandlerRestartNotify")
+        except Exception:  # noqa: BLE001
+            time.sleep(3)
+            continue
+        if f.get("type") == "7":
+            print("the module reports it has restarted")
+            break
+        time.sleep(3)
+    print(f"done. give it a minute, then: python3 jbl_authentics.py probe {ip}")
+    return 0
 
 
 def cmd_fwstatus(args, _spk=None):
@@ -941,6 +1100,12 @@ def main(argv=None):
     s.add_argument("address"); s.set_defaults(fn=cmd_probe, needs_host=False)
     s = sub.add_parser("fwstatus", help="read the firmware-update state from the speaker's web page (no upload)")
     s.add_argument("address"); s.set_defaults(fn=cmd_fwstatus, needs_host=False)
+    s = sub.add_parser("fwflash", help="upload a firmware image through the bootloader page and drive the update")
+    s.add_argument("address"); s.add_argument("file", help="JBL_L16.HUI container (its Wi-Fi module section is used) or a raw module image")
+    s.add_argument("--section", type=int, default=2, help="which container section to send (default 2, the Wi-Fi module)")
+    s.add_argument("--whole", action="store_true", help="send the file exactly as-is")
+    s.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    s.set_defaults(fn=cmd_fwflash, needs_host=False)
     s = sub.add_parser("web", help="save every page of the speaker's web server for inspection")
     s.add_argument("address"); s.add_argument("--out", default="speaker-web"); s.add_argument("--limit", type=int, default=60)
     s.set_defaults(fn=cmd_web, needs_host=False)
