@@ -92,6 +92,10 @@ or simply copy the folder and `git init` inside it.
 - Native iOS app: SwiftUI, `NWConnection` for the TCP channel, SSDP via `NWConnectionGroup` (needs the multicast networking entitlement) or Bonjour if the speaker also advertises itself.
 - Mirror the last firmware images once someone recovers them from the old Harman index URL.
 
+## Firmware
+
+A speaker whose web page shows only "Update Your Products Firmware" is sitting in its bootloader and needs the `JBL_L16.HUI` update file. `PROTOCOL.md` sections 7b and 7c describe the bootloader page, the file's layout, and its size and hashes so you can check a copy. The file is Harman's and is not included here; ask other owners or Harman support.
+
 ## Legal note
 
 Interoperability work: the protocol facts were obtained by decompiling the vendor app, which the DMCA and the EU Software Directive permit for this purpose. No vendor code, assets or firmware are included here. JBL and Authentics are trademarks of Harman International; this project is not affiliated with Harman.
