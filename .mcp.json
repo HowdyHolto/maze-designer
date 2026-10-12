@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "rhino": {
+      "command": "/Users/holto/Library/Application Support/McNeel/Rhinoceros/ai/bin/rhino-mcp-router"
+    }
+  }
+}
